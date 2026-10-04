@@ -1,0 +1,3 @@
+numpy>=1.24
+sentence-transformers>=2.2; extra == "transformers"
+pytest>=7.0; extra == "dev"
