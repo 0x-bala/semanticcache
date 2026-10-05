@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=67", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "semantic-cache"
+version = "0.1.0"
+description = "Semantic caching layer for LLM calls — match by meaning, not exact text."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+transformers = ["sentence-transformers>=2.2"]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
