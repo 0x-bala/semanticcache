@@ -21,6 +21,8 @@ A lightweight, plug-and-play **semantic caching layer** for LLM calls. Instead o
 | 🗂️ Namespaces | Isolate caches per model / system prompt / user |
 | 📊 Stats | Hit-rate, misses, seconds saved |
 | 🔧 Swappable embedders | `HashingEmbedder` (offline) or `SentenceTransformerEmbedder` |
+| ⚡ Async API | Async get-or-compute and decorator support |
+| 🔐 Context isolation | Opaque namespaces from response-affecting context |
 
 ---
 
@@ -45,6 +47,43 @@ def ask_llm(prompt: str) -> str:
 ask_llm("What is the capital of France?")   # MISS → calls LLM
 ask_llm("what's the capital of france")      # HIT  → instant
 ```
+
+## Production checklist
+
+The default `HashingEmbedder` is for demos and near-duplicate detection, not
+for high-stakes semantic matching. Use a real embedding model, validate its
+threshold against your own traffic, and set a conservative threshold (usually
+`>= 0.90`). Bypass the cache for personalised, time-sensitive, or action-taking
+requests.
+
+Partition every response-affecting input with `CacheContext`; its namespace is
+opaque, so raw tenant/user identifiers are not written to the cache database.
+
+```python
+from semantic_cache import CacheContext, SemanticCache
+
+context = CacheContext(
+    tenant="acme",
+    user_scope="account-123",
+    model="your-model",
+    system_prompt_version="support-v7",
+    tools_version="tools-v3",
+    retrieval_version="knowledge-base-2026-10",
+    locale="en-IN",
+)
+
+cache = SemanticCache(threshold=0.92, ttl=300)
+result = cache.get_or_compute(prompt, call_llm, namespace=context.namespace())
+```
+
+For async services, use `async_get_or_compute()` or `@cache.async_cached()`.
+Ordinary async requests coalesce within one event loop; bypass calls always
+compute independently and never read or write cache state.
+
+SQLite is suitable for a single process or local deployment. The public
+`CacheStore` protocol allows a Redis, Postgres, or vector-database backend for
+multi-instance deployments. Use encryption, access controls, and retention
+policies appropriate to the cached data.
 
 ---
 

@@ -41,13 +41,18 @@ class CacheContext:
             "retrieval_version": self.retrieval_version,
             "locale": self.locale,
         }
-        if not all(isinstance(value, str) and value for key, value in values.items() if key != "temperature"):
+        string_values = (
+            value for key, value in values.items() if key != "temperature"
+        )
+        if not all(isinstance(value, str) and value for value in string_values):
             raise ValueError("all string CacheContext fields must be non-empty strings")
         if self.temperature is not None and not isinstance(self.temperature, (int, float)):
             raise TypeError("temperature must be a number or None")
         if not isinstance(self.prefix, str) or not self.prefix:
             raise ValueError("prefix must be a non-empty string")
 
-        encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        encoded = json.dumps(
+            values, sort_keys=True, separators=(",", ":"), default=str
+        ).encode("utf-8")
         digest = hashlib.sha256(encoded).hexdigest()[:32]
         return f"{self.prefix}:{digest}"

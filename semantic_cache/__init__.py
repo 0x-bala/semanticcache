@@ -25,8 +25,8 @@ from .embedders import (
     is_zero_vector,
     validate_embedding,
 )
-from .store import SQLiteStore
 from .protocols import CacheStore
+from .store import SQLiteStore
 
 __version__ = "0.2.0"
 
