@@ -592,11 +592,13 @@ class TestCacheIntegration:
         # 1. Miss - populates cache with "Original Answer"
         res1 = cache.get_or_compute("test query", dynamic_llm)
         assert res1.response == "Original Answer"
+        cache.flush_shadow()
         assert cache.stats.shadow_evaluations == 0
 
         # 2. Hit - dynamic_llm produces "Different Answer 2", shadow mode detects mismatch
         res2 = cache.get_or_compute("test query", dynamic_llm)
         assert res2.response == "Original Answer"  # Cached answer returned to user
+        cache.flush_shadow()
         assert cache.stats.shadow_evaluations == 1
         assert cache.stats.shadow_mismatches == 1
         assert cache.stats.shadow_matches == 0
@@ -605,6 +607,7 @@ class TestCacheIntegration:
         # 3. Add a matching query
         cache.set("matching query", "Constant Answer")
         cache.get_or_compute("matching query", lambda p: "Constant Answer")
+        cache.flush_shadow()
         assert cache.stats.shadow_evaluations == 2
         assert cache.stats.shadow_matches == 1
         assert cache.stats.shadow_mismatches == 1

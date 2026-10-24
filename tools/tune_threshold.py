@@ -8,6 +8,7 @@ Usage:
     python tools/tune_threshold.py --csv path/to/dataset.csv
     python tools/tune_threshold.py  # uses built-in benchmark dataset
 """
+
 from __future__ import annotations
 
 import argparse
@@ -80,6 +81,9 @@ class MetricRow(NamedTuple):
     recall_guard: float
     f1_guard: float
     wrong_hits_guard: int
+    hit_rate_no_guard: float
+    hit_rate_guard: float
+    paraphrases_lost_to_verify: int
 
 
 def evaluate_dataset(
@@ -109,11 +113,16 @@ def evaluate_dataset(
     for t in thresholds:
         tp_ng = fp_ng = fn_ng = 0
         tp_g = fp_g = fn_g = 0
+        lost_to_verify = 0
+        hits_ng = 0
+        hits_g = 0
+        total = len(cached_evals)
 
         for pair, sim, verdict in cached_evals:
             # Without guard
             hit_ng = sim >= t
             if hit_ng:
+                hits_ng += 1
                 if pair.should_hit:
                     tp_ng += 1
                 else:
@@ -125,6 +134,7 @@ def evaluate_dataset(
             # With guard
             hit_g = (sim >= t) and (verdict == GuardVerdict.ACCEPT)
             if hit_g:
+                hits_g += 1
                 if pair.should_hit:
                     tp_g += 1
                 else:
@@ -133,6 +143,10 @@ def evaluate_dataset(
                 if pair.should_hit:
                     fn_g += 1
 
+            # Count true paraphrases lost to VERIFY
+            if pair.should_hit and sim >= t and verdict == GuardVerdict.VERIFY:
+                lost_to_verify += 1
+
         p_ng = tp_ng / (tp_ng + fp_ng) if (tp_ng + fp_ng) > 0 else 1.0
         r_ng = tp_ng / (tp_ng + fn_ng) if (tp_ng + fn_ng) > 0 else 0.0
         f1_ng = (2 * p_ng * r_ng) / (p_ng + r_ng) if (p_ng + r_ng) > 0 else 0.0
@@ -140,6 +154,9 @@ def evaluate_dataset(
         p_g = tp_g / (tp_g + fp_g) if (tp_g + fp_g) > 0 else 1.0
         r_g = tp_g / (tp_g + fn_g) if (tp_g + fn_g) > 0 else 0.0
         f1_g = (2 * p_g * r_g) / (p_g + r_g) if (p_g + r_g) > 0 else 0.0
+
+        hr_ng = hits_ng / total if total else 0.0
+        hr_g = hits_g / total if total else 0.0
 
         if fp_ng == 0 and lowest_zero_wrong_no_guard is None:
             lowest_zero_wrong_no_guard = t
@@ -157,6 +174,9 @@ def evaluate_dataset(
                 recall_guard=r_g,
                 f1_guard=f1_g,
                 wrong_hits_guard=fp_g,
+                hit_rate_no_guard=hr_ng,
+                hit_rate_guard=hr_g,
+                paraphrases_lost_to_verify=lost_to_verify,
             )
         )
 
@@ -170,57 +190,101 @@ def print_report(
     total_pairs: int,
 ) -> None:
     """Print ASCII comparison table and recommendation summary."""
-    print("=" * 84)
+    print("=" * 110)
     print(f" THRESHOLD TUNING REPORT ({total_pairs} prompt pairs)")
-    print("=" * 84)
+    print("=" * 110)
     header = (
         f"{'Thresh':<7} | "
-        f"{'Prec (Off)':<10} {'Rec (Off)':<10} {'Wrong':<6} | "
-        f"{'Prec (On)':<10} {'Rec (On)':<10} {'F1 (On)':<8} {'Wrong':<6}"
+        f"{'HR(Off)':<8} {'Prec':<7} {'Wrong':<6} | "
+        f"{'HR(On)':<8} {'Prec':<7} {'F1':<7} {'Wrong':<6} {'Lost':<5}"
     )
     print(header)
-    print("-" * 84)
+    print("-" * 110)
 
     for r in rows:
         part1 = (
             f"{r.threshold:<7.2f} | "
-            f"{r.precision_no_guard:<10.2%} {r.recall_no_guard:<10.2%} "
+            f"{r.hit_rate_no_guard:<8.1%} {r.precision_no_guard:<7.1%} "
             f"{r.wrong_hits_no_guard:<6d} | "
         )
         part2 = (
-            f"{r.precision_guard:<10.2%} {r.recall_guard:<10.2%} "
-            f"{r.f1_guard:<8.2%} {r.wrong_hits_guard:<6d}"
+            f"{r.hit_rate_guard:<8.1%} {r.precision_guard:<7.1%} "
+            f"{r.f1_guard:<7.1%} {r.wrong_hits_guard:<6d} "
+            f"{r.paraphrases_lost_to_verify:<5d}"
         )
         print(part1 + part2)
 
-    print("=" * 84)
+    print("=" * 110)
     print(" SUMMARY & RECOMMENDATIONS")
-    print("=" * 84)
+    print("=" * 110)
     lowest_ng_str = f"{lowest_ng:.2f}" if lowest_ng is not None else "None found"
     lowest_g_str = f"{lowest_g:.2f}" if lowest_g is not None else "None found"
     print(f" Lowest threshold with 0 wrong hits WITHOUT guard : {lowest_ng_str}")
     print(f" Lowest threshold with 0 wrong hits WITH guard    : {lowest_g_str}")
-    if lowest_g is not None:
-        rec_low = max(0.88, lowest_g)
-        rec_high = min(0.95, rec_low + 0.04)
-        print(f" Recommended operational threshold range          : {rec_low:.2f} - {rec_high:.2f}")
-    print("=" * 84)
+
+    # Pure data-driven recommendation from the table (no hard-coded ranges)
+    safe_rows = [r for r in rows if r.wrong_hits_guard == 0]
+    if safe_rows:
+        # Maximize F1 score with guard, breaking ties with higher hit rate, then lowest threshold
+        optimal_row = max(safe_rows, key=lambda r: (r.f1_guard, r.hit_rate_guard, -r.threshold))
+        print(f"\n Recommended Threshold (Data-Driven)    : {optimal_row.threshold:.2f}")
+        print(f"   Hit rate with guard   : {optimal_row.hit_rate_guard:.1%}")
+        print(f"   Wrong hits with guard : {optimal_row.wrong_hits_guard}")
+        print(f"   Hit rate without guard: {optimal_row.hit_rate_no_guard:.1%}")
+        print(f"   Wrong hits without g. : {optimal_row.wrong_hits_no_guard}")
+        print(f"   Precision with guard  : {optimal_row.precision_guard:.1%}")
+        print(f"   F1 score with guard   : {optimal_row.f1_guard:.1%}")
+        print(f"   True paraphrases lost to VERIFY: {optimal_row.paraphrases_lost_to_verify}")
+    elif rows:
+        min_wrong_row = min(rows, key=lambda r: r.wrong_hits_guard)
+        print("\n WARNING: No candidate threshold achieved 0 wrong hits.")
+        print(
+            f" Lowest-risk candidate threshold from table: "
+            f"{min_wrong_row.threshold:.2f} ({min_wrong_row.wrong_hits_guard} wrong hits)"
+        )
+    print("=" * 110)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Tune semantic cache threshold")
     parser.add_argument("--csv", type=str, default="", help="Path to CSV dataset")
+    parser.add_argument(
+        "--embedder",
+        type=str,
+        default="hashing",
+        choices=["hashing", "gemini"],
+        help="Embedder: 'hashing' (default, offline) or 'gemini' (requires GEMINI_API_KEY)",
+    )
     parser.add_argument("--step", type=float, default=0.02, help="Threshold step size")
     args = parser.parse_args()
 
+    # 1. Dataset loading & CSV validation
     if args.csv and os.path.exists(args.csv):
         print(f"Loading dataset from: {args.csv}")
         dataset = load_dataset_from_csv(args.csv)
     else:
-        print("Using built-in benchmark dataset (15 labeled test pairs)")
+        print("=" * 80)
+        print("NOTICE: No valid --csv dataset provided. A labeled CSV dataset")
+        print("(columns: query_a, query_b, should_hit) is required for production calibration.")
+        print("Falling back to built-in benchmark dataset for demonstration only.")
+        print("=" * 80)
         dataset = DEFAULT_DATASET
 
-    rows, lowest_ng, lowest_g = evaluate_dataset(dataset, step=args.step)
+    if len(dataset) < 100:
+        print(f"\nWARNING: Dataset contains only {len(dataset)} pairs (< 100).")
+        print("Sample size is too small for high statistical confidence.")
+        print("For production calibration, provide a CSV with >= 100 labeled prompt pairs.\n")
+
+    # 2. Embedder initialization
+    if args.embedder == "gemini":
+        from semantic_cache.gemini import GeminiEmbedder
+
+        print("Using GeminiEmbedder (gemini-embedding-001)...")
+        embedder = GeminiEmbedder()
+    else:
+        embedder = HashingEmbedder()
+
+    rows, lowest_ng, lowest_g = evaluate_dataset(dataset, embedder=embedder, step=args.step)
     print_report(rows, lowest_ng, lowest_g, len(dataset))
 
 

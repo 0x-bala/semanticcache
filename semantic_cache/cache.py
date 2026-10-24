@@ -21,6 +21,7 @@ Security notes
 - Set ``enabled=False`` at the call-site for sensitive, personalised,
   or time-critical queries that must never be served from cache.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -31,6 +32,7 @@ import random
 import threading
 import time
 from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -60,9 +62,7 @@ def _validate_threshold(value: float) -> float:
     if not isinstance(value, (int, float)):
         raise TypeError(f"threshold must be a float, got {type(value).__name__}")
     if not (_MIN_THRESHOLD <= value <= _MAX_THRESHOLD):
-        raise ValueError(
-            f"threshold must be in [{_MIN_THRESHOLD}, {_MAX_THRESHOLD}], got {value}"
-        )
+        raise ValueError(f"threshold must be in [{_MIN_THRESHOLD}, {_MAX_THRESHOLD}], got {value}")
     return float(value)
 
 
@@ -93,6 +93,7 @@ def _detect_embedder_name(embedder: Any) -> str:
 # Public data classes
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class Stats:
     """Accumulates cache hit/miss statistics.
@@ -100,6 +101,7 @@ class Stats:
     ``seconds_saved`` is an *estimate* based on measuring the duration of the
     original compute call.  It does not account for embedding latency.
     """
+
     hits: int = 0
     misses: int = 0
     errors: int = 0
@@ -110,6 +112,7 @@ class Stats:
     shadow_evaluations: int = 0
     shadow_matches: int = 0
     shadow_mismatches: int = 0
+    shadow_errors: int = 0
     seconds_saved: float = 0.0
     # entry_id -> measured latency (seconds) of the original compute call
     _latency: dict[int, float] = field(default_factory=dict, repr=False)
@@ -121,10 +124,14 @@ class Stats:
 
     @property
     def estimated_false_hit_rate(self) -> float:
-        """Estimated false-hit rate from shadow-mode evaluations (0.0 if no evaluations)."""
-        if self.shadow_evaluations == 0:
+        """Estimated false-hit rate from shadow-mode evaluations (0.0 if no evaluations).
+
+        Shadow errors and timeouts are excluded from this calculation.
+        """
+        valid = self.shadow_matches + self.shadow_mismatches
+        if valid == 0:
             return 0.0
-        return self.shadow_mismatches / self.shadow_evaluations
+        return self.shadow_mismatches / valid
 
     def reset(self) -> None:
         """Reset all counters and the latency map."""
@@ -138,6 +145,7 @@ class Stats:
         self.shadow_evaluations = 0
         self.shadow_matches = 0
         self.shadow_mismatches = 0
+        self.shadow_errors = 0
         self.seconds_saved = 0.0
         self._latency.clear()
 
@@ -163,6 +171,7 @@ class Stats:
 @dataclass
 class CacheResult:
     """Result returned by ``get`` and ``get_or_compute``."""
+
     response: str
     hit: bool
     score: float = 0.0
@@ -177,11 +186,13 @@ MissCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
 AsyncCompute = Callable[[str], Awaitable[str]]
 VerifierCallback = Callable[[str, str], bool]
+ShadowComparator = Callable[[str, str], bool]
 
 
 # ---------------------------------------------------------------------------
 # SemanticCache
 # ---------------------------------------------------------------------------
+
 
 class SemanticCache:
     """Semantic cache for LLM calls.
@@ -231,6 +242,13 @@ class SemanticCache:
         immediate exact hits without calling the embedder.
     embedding_lru_capacity:
         Maximum number of vectors to retain in the embedding LRU cache (default 1000).
+    shadow_max_concurrency:
+        Maximum number of concurrent background shadow evaluation threads.
+        Default is 2.  Set higher for high-throughput services.
+    shadow_comparator:
+        Optional ``(fresh_response, cached_response) -> bool`` function used
+        to compare shadow responses.  Falls back to the verifier, then to
+        exact string comparison.
     """
 
     def __init__(
@@ -251,6 +269,8 @@ class SemanticCache:
         verifier: VerifierCallback | None = None,
         verify_always: bool = True,
         shadow_rate: float = 0.0,
+        shadow_max_concurrency: int = 2,
+        shadow_comparator: ShadowComparator | None = None,
         exact_match: bool = True,
         embedding_lru_capacity: int = 1000,
     ) -> None:
@@ -270,10 +290,22 @@ class SemanticCache:
         self.verifier: VerifierCallback | None = verifier
         self.verify_always: bool = verify_always
         self.shadow_rate: float = max(0.0, min(1.0, float(shadow_rate)))
+        self.shadow_max_concurrency: int = max(1, int(shadow_max_concurrency))
+        self.shadow_comparator: ShadowComparator | None = shadow_comparator
         self.exact_match: bool = exact_match
         self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
         self.stats = Stats()
         self._stats_lock = threading.Lock()
+
+        # Shadow mode: bounded thread pool (daemon threads, never block shutdown)
+        self._shadow_pool: ThreadPoolExecutor | None = None
+        self._shadow_futures: list[Any] = []
+        self._shadow_futures_lock = threading.Lock()
+        if self.shadow_rate > 0.0:
+            self._shadow_pool = ThreadPoolExecutor(
+                max_workers=self.shadow_max_concurrency,
+                thread_name_prefix="semantic-cache-shadow",
+            )
 
         # Single-flight: query -> (lock, result/exception)
         self._inflight: dict[str, list[Any]] = {}
@@ -281,6 +313,100 @@ class SemanticCache:
         # Async single-flight is scoped to an event loop.  A cache instance is
         # normally shared by one ASGI application's loop.
         self._async_inflight: dict[str, asyncio.Future[CacheResult]] = {}
+
+    # ------------------------------------------------------------------
+    # Shadow evaluation (background thread)
+    # ------------------------------------------------------------------
+
+    def _compare_shadow_responses(self, fresh: str, cached: str) -> bool:
+        """Compare fresh vs cached response using the best available comparator."""
+        if self.shadow_comparator is not None:
+            try:
+                return self.shadow_comparator(fresh, cached)
+            except Exception:
+                pass  # fall through to next method
+        if self.verifier is not None:
+            try:
+                return self.verifier(fresh, cached)
+            except Exception:
+                return fresh.strip().lower() == cached.strip().lower()
+        return fresh.strip() == cached.strip()
+
+    def _shadow_evaluate(
+        self,
+        compute: Callable[[str], str],
+        query: str,
+        cached_response: str,
+    ) -> None:
+        """Run shadow evaluation in the current thread (called from pool)."""
+        try:
+            fresh_response = compute(query)
+            is_match = self._compare_shadow_responses(fresh_response, cached_response)
+            with self._stats_lock:
+                self.stats.shadow_evaluations += 1
+                if is_match:
+                    self.stats.shadow_matches += 1
+                else:
+                    self.stats.shadow_mismatches += 1
+        except Exception as exc:
+            with self._stats_lock:
+                self.stats.shadow_evaluations += 1
+                self.stats.shadow_errors += 1
+            logger.warning("Shadow mode evaluation failed: %s", exc)
+
+    def _maybe_shadow(
+        self,
+        compute: Callable[[str], str],
+        query: str,
+        cached_response: str,
+    ) -> None:
+        """Submit a shadow evaluation to the thread pool if sampled."""
+        if self.shadow_rate <= 0.0 or random.random() >= self.shadow_rate:
+            return
+        pool = self._shadow_pool
+        if pool is None:
+            # Create pool lazily (shadow_rate changed after construction)
+            self._shadow_pool = ThreadPoolExecutor(
+                max_workers=self.shadow_max_concurrency,
+                thread_name_prefix="semantic-cache-shadow",
+            )
+            pool = self._shadow_pool
+        try:
+            future = pool.submit(self._shadow_evaluate, compute, query, cached_response)
+            with self._shadow_futures_lock:
+                self._shadow_futures.append(future)
+                if len(self._shadow_futures) > 100:
+                    self._shadow_futures = [f for f in self._shadow_futures if not f.done()]
+        except RuntimeError:
+            # Pool shut down — ignore
+            pass
+
+    def flush_shadow(self, timeout: float = 2.0) -> None:
+        """Wait for pending background shadow evaluations to complete.
+
+        Useful in unit tests and graceful application shutdown.
+        """
+        with self._shadow_futures_lock:
+            pending = list(self._shadow_futures)
+        if not pending:
+            return
+        deadline = time.monotonic() + timeout
+        for f in pending:
+            remaining = max(0.001, deadline - time.monotonic())
+            try:
+                f.result(timeout=remaining)
+            except Exception:
+                pass
+        with self._shadow_futures_lock:
+            self._shadow_futures = [f for f in self._shadow_futures if not f.done()]
+
+    def close(self) -> None:
+        """Release cache resources including background shadow thread pool."""
+        if self._shadow_pool is not None:
+            self._shadow_pool.shutdown(wait=False)
+            self._shadow_pool = None
+        if hasattr(self.store, "close"):
+            self.store.close()
 
     # ------------------------------------------------------------------
     # Core API
@@ -451,7 +577,10 @@ class SemanticCache:
         if self._log_queries:
             logger.debug(
                 "cache.hit ns=%r score=%.4f query=%r matched=%r",
-                ns, entry.score, query, entry.query,
+                ns,
+                entry.score,
+                query,
+                entry.query,
             )
         else:
             logger.debug("cache.hit ns=%r score=%.4f", ns, entry.score)
@@ -580,29 +709,8 @@ class SemanticCache:
             verify_always=verify_always,
         )
         if cached:
-            # Shadow evaluation
-            if self.shadow_rate > 0.0 and random.random() < self.shadow_rate:
-                try:
-                    fresh_response = compute(query)
-                    is_match = False
-                    if self.verifier is not None:
-                        try:
-                            is_match = self.verifier(fresh_response, cached.response)
-                        except Exception:
-                            is_match = (
-                                fresh_response.strip().lower() == cached.response.strip().lower()
-                            )
-                    else:
-                        is_match = (fresh_response.strip() == cached.response.strip())
-
-                    with self._stats_lock:
-                        self.stats.shadow_evaluations += 1
-                        if is_match:
-                            self.stats.shadow_matches += 1
-                        else:
-                            self.stats.shadow_mismatches += 1
-                except Exception as exc:
-                    logger.warning("Shadow mode evaluation failed: %s", exc)
+            # Shadow evaluation — dispatched to background thread pool
+            self._maybe_shadow(compute, query, cached.response)
             return cached
 
         flight_key = f"{ns}:{query}"
@@ -747,28 +855,26 @@ class SemanticCache:
             self.get, query, ns, bypass, threshold, guard, verify_always
         )
         if cached:
+            # Shadow evaluation — async compute wrapped in a background task
             if self.shadow_rate > 0.0 and random.random() < self.shadow_rate:
-                try:
-                    fresh_response = await compute_fresh()
-                    is_match = False
-                    if self.verifier is not None:
-                        try:
-                            is_match = self.verifier(fresh_response, cached.response)
-                        except Exception:
-                            is_match = (
-                                fresh_response.strip().lower() == cached.response.strip().lower()
-                            )
-                    else:
-                        is_match = (fresh_response.strip() == cached.response.strip())
 
-                    with self._stats_lock:
-                        self.stats.shadow_evaluations += 1
-                        if is_match:
-                            self.stats.shadow_matches += 1
-                        else:
-                            self.stats.shadow_mismatches += 1
-                except Exception as exc:
-                    logger.warning("Shadow mode async evaluation failed: %s", exc)
+                async def _async_shadow() -> None:
+                    try:
+                        fresh_response = await compute_fresh()
+                        is_match = self._compare_shadow_responses(fresh_response, cached.response)
+                        with self._stats_lock:
+                            self.stats.shadow_evaluations += 1
+                            if is_match:
+                                self.stats.shadow_matches += 1
+                            else:
+                                self.stats.shadow_mismatches += 1
+                    except Exception as exc:
+                        with self._stats_lock:
+                            self.stats.shadow_evaluations += 1
+                            self.stats.shadow_errors += 1
+                        logger.warning("Shadow mode async evaluation failed: %s", exc)
+
+                asyncio.ensure_future(_async_shadow())
             return cached
 
         key = f"{ns}:{query}"
@@ -811,17 +917,20 @@ class SemanticCache:
         def wrap(fn: AsyncCompute) -> AsyncCompute:
             @functools.wraps(fn)
             async def inner(prompt: str) -> str:
-                return (await self.async_get_or_compute(
-                    prompt,
-                    fn,
-                    namespace,
-                    bypass=bypass,
-                    threshold=threshold,
-                    guard=guard,
-                    verify_always=verify_always,
-                )).response
+                return (
+                    await self.async_get_or_compute(
+                        prompt,
+                        fn,
+                        namespace,
+                        bypass=bypass,
+                        threshold=threshold,
+                        guard=guard,
+                        verify_always=verify_always,
+                    )
+                ).response
 
             return inner
+
         return wrap
 
     # ------------------------------------------------------------------

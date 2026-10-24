@@ -16,6 +16,7 @@ New in v0.2.0:
     embedders.validate_embedding()
     embedders.is_zero_vector()
 """
+
 from .cache import CacheResult, SemanticCache, Stats
 from .context import CacheContext
 from .embedders import (
@@ -30,6 +31,7 @@ from .gemini import GeminiAPIError, GeminiClient, GeminiEmbedder
 from .guard import GuardResult, GuardVerdict, check_match, normalize_text
 from .protocols import CacheStore
 from .store import SQLiteStore
+from .verifier import GeminiVerifier
 
 __version__ = "0.3.0"
 
@@ -50,6 +52,7 @@ __all__ = [
     "GeminiClient",
     "GeminiEmbedder",
     "GeminiAPIError",
+    "GeminiVerifier",
     # Guard
     "check_match",
     "GuardResult",

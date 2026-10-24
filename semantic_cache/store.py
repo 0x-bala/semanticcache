@@ -17,6 +17,7 @@ Concurrency:
   - Cross-process safety is NOT guaranteed (SQLite WAL mode recommended for
     multi-reader, single-writer cross-process access).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -40,13 +41,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 _MAX_NAMESPACE_LEN = 256
 _MAX_QUERY_LEN = 32_768
-_MAX_RESPONSE_LEN = 1_048_576   # 1 MB
+_MAX_RESPONSE_LEN = 1_048_576  # 1 MB
 _MAX_TTL = 60 * 60 * 24 * 365  # 1 year in seconds
 
 
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class Entry:
@@ -60,13 +62,12 @@ class Entry:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _validate_namespace(ns: str) -> str:
     if not isinstance(ns, str) or not ns:
         raise ValueError("namespace must be a non-empty string")
     if len(ns) > _MAX_NAMESPACE_LEN:
-        raise ValueError(
-            f"namespace exceeds {_MAX_NAMESPACE_LEN} characters: {ns[:40]!r}..."
-        )
+        raise ValueError(f"namespace exceeds {_MAX_NAMESPACE_LEN} characters: {ns[:40]!r}...")
     return ns
 
 
@@ -92,6 +93,7 @@ def _safe_load_blob(blob: bytes, expected_dim: int) -> np.ndarray | None:
 # ---------------------------------------------------------------------------
 # VectorIndex (pre-allocated doubling capacity index)
 # ---------------------------------------------------------------------------
+
 
 class VectorIndex:
     """In-memory vector index with capacity-doubling geometric growth.
@@ -148,10 +150,31 @@ class VectorIndex:
     def active_matrix(self) -> np.ndarray:
         return self.matrix[: self.count]
 
+    def remove_ids(self, ids_to_remove: set[int]) -> None:
+        """In-place removal of evicted IDs with array compaction.
+
+        Compacts the matrix in memory using slice assignment, avoiding full
+        re-allocation or database reload.
+        """
+        if not ids_to_remove or self.count == 0:
+            return
+        keep_indices = [i for i, eid in enumerate(self.ids) if eid not in ids_to_remove]
+        if len(keep_indices) == self.count:
+            return  # None of the evicted IDs were in this index
+        if not keep_indices:
+            self.ids.clear()
+            self.count = 0
+            return
+        # Compact matrix rows in-place
+        self.matrix[: len(keep_indices)] = self.matrix[keep_indices]
+        self.ids = [self.ids[i] for i in keep_indices]
+        self.count = len(self.ids)
+
 
 # ---------------------------------------------------------------------------
 # SQLiteStore
 # ---------------------------------------------------------------------------
+
 
 class SQLiteStore:
     """SQLite-backed semantic cache storage.
@@ -204,36 +227,15 @@ class SQLiteStore:
                 embedder    TEXT    NOT NULL DEFAULT ''
             )"""
         )
-        # Migrate existing tables if columns are missing
-        existing_cols = {
-            row[1] for row in self.db.execute("PRAGMA table_info(entries)").fetchall()
-        }
-        if "query_hash" not in existing_cols:
-            self.db.execute("ALTER TABLE entries ADD COLUMN query_hash TEXT")
-        if "embedder" not in existing_cols:
-            self.db.execute("ALTER TABLE entries ADD COLUMN embedder TEXT NOT NULL DEFAULT ''")
 
-        # Backfill query_hash for legacy rows where missing
-        unhashed = self.db.execute(
-            "SELECT id, query FROM entries WHERE query_hash IS NULL OR query_hash = ''"
-        ).fetchall()
-        if unhashed:
-            updates = [
-                (hashlib.sha256(normalize_text(q).encode("utf-8")).hexdigest(), rid)
-                for rid, q in unhashed
-            ]
-            self.db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
+        # Concurrency-safe migration: use user_version as a migration lock.
+        # 0 = not migrated, 1 = migration in progress, 2 = migration complete.
+        self._run_safe_migration()
 
         self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)"
-        )
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)"
-        )
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)"
-        )
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_entries_exact "
             "ON entries(namespace, query_hash, embedder)"
@@ -242,6 +244,74 @@ class SQLiteStore:
 
         # index_key -> VectorIndex
         self._index: dict[str, VectorIndex] = {}
+
+    def _run_safe_migration(self) -> None:
+        """Run schema migration with transactional concurrency lock via BEGIN IMMEDIATE.
+
+        Uses SQLite's ``BEGIN IMMEDIATE`` to acquire an exclusive write lock across
+        all processes. Re-checks ``PRAGMA user_version`` inside the transaction
+        so that concurrent processes see the completed migration and exit safely
+        without issuing redundant ALTER TABLE statements.
+        """
+        import time as _time
+
+        # Fast path check outside transaction
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 2:
+            return
+
+        max_attempts = 40
+        poll_interval = 0.05
+
+        for attempt in range(max_attempts):
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+                    # Another process is migrating — wait and check if it finished
+                    _time.sleep(poll_interval)
+                    v = self.db.execute("PRAGMA user_version").fetchone()[0]
+                    if v >= 2:
+                        return
+                    continue
+                raise
+
+        try:
+            # Re-check user_version inside the immediate transaction
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version >= 2:
+                self.db.execute("COMMIT")
+                return
+
+            existing_cols = {
+                row[1] for row in self.db.execute("PRAGMA table_info(entries)").fetchall()
+            }
+            if "query_hash" not in existing_cols:
+                self.db.execute("ALTER TABLE entries ADD COLUMN query_hash TEXT")
+            if "embedder" not in existing_cols:
+                self.db.execute("ALTER TABLE entries ADD COLUMN embedder TEXT NOT NULL DEFAULT ''")
+
+            # Backfill query_hash for legacy rows where missing
+            unhashed = self.db.execute(
+                "SELECT id, query FROM entries WHERE query_hash IS NULL OR query_hash = ''"
+            ).fetchall()
+            if unhashed:
+                updates = [
+                    (hashlib.sha256(normalize_text(q).encode("utf-8")).hexdigest(), rid)
+                    for rid, q in unhashed
+                ]
+                self.db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
+
+            # Mark migration complete and commit
+            self.db.execute("PRAGMA user_version = 2")
+            self.db.execute("COMMIT")
+        except Exception:
+            try:
+                self.db.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
 
     # ------------------------------------------------------------------
     # Writes
@@ -306,22 +376,44 @@ class SQLiteStore:
         return entry_id
 
     def _evict_lru_if_needed(self) -> None:
-        """Evict the least-recently-used entry if over the entry limit.
+        """Batch-evict the least-recently-used entries down to 90% capacity.
+
         Caller must hold ``self._lock``.
+
+        Notes
+        -----
+        - Evicts in batches down to 90% of ``max_entries`` to amortize eviction
+          overhead across subsequent inserts.
+        - Uses portable SQL (``CASE WHEN last_hit_at IS NULL THEN 0 ELSE 1 END``)
+          to ensure compatibility with SQLite versions prior to 3.30.0 (which first
+          introduced ``NULLS FIRST`` syntax in October 2019).
+        - Compacts in-memory vector matrices in-place via ``VectorIndex.remove_ids``
+          rather than invalidating and reloading vectors from disk.
         """
         total = self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
-        if total > self._max_entries:
-            # LRU: order by last_hit_at NULLS FIRST (never hit), then created_at
-            self.db.execute(
-                """DELETE FROM entries WHERE id IN (
-                    SELECT id FROM entries
-                    ORDER BY last_hit_at ASC NULLS FIRST, created_at ASC
-                    LIMIT ?
-                )""",
-                (total - self._max_entries,),
+        if self._max_entries is not None and total > self._max_entries:
+            target_count = max(0, min(self._max_entries - 1, int(self._max_entries * 0.90)))
+            entries_to_evict = total - target_count
+
+            cur = self.db.execute(
+                """SELECT id FROM entries
+                   ORDER BY CASE WHEN last_hit_at IS NULL THEN 0 ELSE 1 END ASC,
+                            last_hit_at ASC,
+                            created_at ASC
+                   LIMIT ?""",
+                (entries_to_evict,),
             )
-            self.db.commit()
-            self._index.clear()
+            evicted_ids = {row[0] for row in cur.fetchall()}
+            if evicted_ids:
+                placeholders = ",".join("?" for _ in evicted_ids)
+                self.db.execute(
+                    f"DELETE FROM entries WHERE id IN ({placeholders})",
+                    list(evicted_ids),
+                )
+                self.db.commit()
+                # In-place index removal without clearing/reloading index
+                for vindex in self._index.values():
+                    vindex.remove_ids(evicted_ids)
 
     # ------------------------------------------------------------------
     # Exact Match Lookup
@@ -489,7 +581,8 @@ class SQLiteStore:
             )
             self.db.commit()
             self._index = {
-                k: v for k, v in self._index.items()
+                k: v
+                for k, v in self._index.items()
                 if not (k == namespace or k.startswith(f"{namespace}::"))
             }
             return cur.rowcount
@@ -512,11 +605,10 @@ class SQLiteStore:
         with self._lock:
             if namespace is not None:
                 _validate_namespace(namespace)
-                self.db.execute(
-                    "DELETE FROM entries WHERE namespace=?", (namespace,)
-                )
+                self.db.execute("DELETE FROM entries WHERE namespace=?", (namespace,))
                 self._index = {
-                    k: v for k, v in self._index.items()
+                    k: v
+                    for k, v in self._index.items()
                     if not (k == namespace or k.startswith(f"{namespace}::"))
                 }
             else:
