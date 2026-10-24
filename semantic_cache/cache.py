@@ -340,14 +340,40 @@ class SemanticCache:
         - **No caching of failed results**: only successful, non-empty strings
           are stored.
 
+        When ``bypass=True`` (or the cache is globally disabled), the cache is
+        not consulted or written to.  Each bypass call computes independently;
+        it deliberately does not participate in single-flight coalescing.
+
         Concurrency note: single-flight operates within one process only.
         Across multiple processes, duplicate ``compute`` calls can still occur.
         """
-        cached = self.get(query, namespace, bypass=bypass)
+        ns = _validate_namespace(namespace or self.namespace)
+
+        # A bypass must be a true no-cache operation: do not generate an
+        # embedding, touch the store, or join an ordinary request's inflight
+        # computation.  Globally disabled caches use the same uncached path.
+        if bypass or not self.enabled:
+            try:
+                response = compute(query)
+                if not isinstance(response, str) or not response:
+                    raise ValueError(
+                        "compute function must return a non-empty string; "
+                        f"got {type(response).__name__!r}"
+                    )
+            except Exception as exc:
+                self.stats.errors += 1
+                if self._on_error:
+                    try:
+                        self._on_error(query, exc)
+                    except Exception:
+                        pass
+                raise
+            return CacheResult(response=response, hit=False)
+
+        cached = self.get(query, ns)
         if cached:
             return cached
 
-        ns = _validate_namespace(namespace or self.namespace)
         flight_key = f"{ns}:{query}"
 
         # Each inflight slot is a two-element list: [Event, result_or_exc|None].

@@ -12,8 +12,6 @@ from __future__ import annotations
 import threading
 import time
 from typing import Optional
-from unittest.mock import MagicMock
-
 import numpy as np
 import pytest
 
@@ -620,6 +618,146 @@ class TestGetOrCompute:
         assert cache.stats.seconds_saved > 0.0
 
 
+class TestGetOrComputeBypass:
+
+    def _make(self, enabled=True):
+        emb = FixedEmbedder(DIM)
+        emb.register("q", emb.unit(0))
+        store = make_store(DIM)
+        return SemanticCache(
+            embedder=emb, store=store, threshold=0.90, enabled=enabled
+        ), store
+
+    def test_bypass_computes_fresh_instead_of_using_existing_entry(self):
+        cache, _ = self._make()
+        cache.set("q", "cached")
+        calls = []
+
+        result = cache.get_or_compute("q", lambda text: calls.append(text) or "fresh", bypass=True)
+
+        assert result.response == "fresh"
+        assert result.hit is False
+        assert calls == ["q"]
+
+    def test_bypass_does_not_create_or_modify_entries(self):
+        cache, store = self._make()
+
+        cache.get_or_compute("q", lambda _: "fresh", bypass=True)
+        assert store.size() == 0
+
+        cache.set("q", "cached")
+        entry_before = store.db.execute(
+            "SELECT response, hits FROM entries WHERE namespace=? AND query=?", ("default", "q")
+        ).fetchone()
+        cache.get_or_compute("q", lambda _: "fresh", bypass=True)
+        entry_after = store.db.execute(
+            "SELECT response, hits FROM entries WHERE namespace=? AND query=?", ("default", "q")
+        ).fetchone()
+        assert entry_after == entry_before == ("cached", 0)
+
+    def test_repeated_bypass_calls_compute_independently(self):
+        cache, store = self._make()
+        calls = []
+
+        def compute(_: str) -> str:
+            calls.append(1)
+            return f"fresh-{len(calls)}"
+
+        assert cache.get_or_compute("q", compute, bypass=True).response == "fresh-1"
+        assert cache.get_or_compute("q", compute, bypass=True).response == "fresh-2"
+        assert len(calls) == 2
+        assert store.size() == 0
+
+    def test_bypass_exception_propagates_without_caching(self):
+        cache, store = self._make()
+
+        def failing_compute(_: str) -> str:
+            raise RuntimeError("LLM API failed")
+
+        with pytest.raises(RuntimeError, match="LLM API failed"):
+            cache.get_or_compute("q", failing_compute, bypass=True)
+        assert store.size() == 0
+        assert cache.stats.errors == 1
+
+    def test_bypass_avoids_embedder_and_store(self):
+        class ExplodingEmbedder:
+            def embed(self, _: str) -> np.ndarray:
+                raise AssertionError("bypass must not embed")
+
+        class ExplodingStore:
+            def __bool__(self) -> bool:
+                return True
+
+            def __getattr__(self, name: str):
+                raise AssertionError(f"bypass must not access store.{name}")
+
+        store = ExplodingStore()
+        cache = SemanticCache(embedder=ExplodingEmbedder(), store=store)
+
+        assert cache.get_or_compute("q", lambda _: "fresh", bypass=True).response == "fresh"
+
+    def test_enabled_false_computes_without_reading_or_writing(self):
+        cache, store = self._make(enabled=False)
+        # Seed the backing store directly; a disabled cache must ignore it.
+        store.add("default", "q", cache.embedder.embed("q"), "cached", ttl=None)
+
+        result = cache.get_or_compute("q", lambda _: "fresh")
+
+        assert result.response == "fresh"
+        assert result.hit is False
+        assert store.db.execute(
+            "SELECT response FROM entries WHERE namespace=? AND query=?", ("default", "q")
+        ).fetchone() == ("cached",)
+
+    def test_ordinary_requests_still_store_and_hit(self):
+        cache, store = self._make()
+        calls = []
+
+        def compute(_: str) -> str:
+            calls.append(1)
+            return "cached-result"
+
+        first = cache.get_or_compute("q", compute)
+        second = cache.get_or_compute("q", compute)
+
+        assert first.hit is False
+        assert second.hit is True
+        assert second.response == "cached-result"
+        assert calls == [1]
+        assert store.size() == 1
+
+    def test_concurrent_bypass_calls_compute_independently_without_deadlock(self):
+        cache, store = self._make()
+        barrier = threading.Barrier(2)
+        calls = []
+        results = []
+        errors = []
+
+        def compute(_: str) -> str:
+            calls.append(1)
+            time.sleep(0.05)
+            return "fresh"
+
+        def worker():
+            try:
+                barrier.wait()
+                results.append(cache.get_or_compute("q", compute, bypass=True))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=2.0)
+
+        assert not errors
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(results) == 2
+        assert len(calls) == 2
+        assert store.size() == 0
+
+
 # ===========================================================================
 # 5. @cached decorator tests
 # ===========================================================================
@@ -659,6 +797,26 @@ class TestCachedDecorator:
 
         with pytest.raises(ValueError, match="bad"):
             bad_fn("test prompt")
+
+    def test_bypass_decorator_neither_reads_nor_writes(self):
+        emb = FixedEmbedder(DIM)
+        emb.register("q", emb.unit(0))
+        store = make_store(DIM)
+        cache = SemanticCache(embedder=emb, store=store, threshold=0.90)
+        cache.set("q", "cached")
+        calls = []
+
+        @cache.cached(bypass=True)
+        def ask(prompt: str) -> str:
+            calls.append(prompt)
+            return f"fresh-{len(calls)}"
+
+        assert ask("q") == "fresh-1"
+        assert ask("q") == "fresh-2"
+        assert calls == ["q", "q"]
+        assert store.db.execute(
+            "SELECT response, hits FROM entries WHERE namespace=? AND query=?", ("default", "q")
+        ).fetchone() == ("cached", 0)
 
 
 # ===========================================================================
