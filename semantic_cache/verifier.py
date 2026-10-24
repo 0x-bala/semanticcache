@@ -129,14 +129,35 @@ class GeminiVerifier:
             try:
                 with urlopen(request, timeout=self.timeout) as resp:
                     body: dict[str, Any] = json.load(resp)
-                answer = body["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+                candidates = body.get("candidates", [])
+                if not candidates:
+                    raise ValueError("No candidates returned from Gemini API")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                text = ""
+                for p in parts:
+                    if isinstance(p, dict) and "text" in p:
+                        text = p["text"].strip().lower()
+                        break
+                if not text:
+                    raise ValueError("No text part found in candidate response")
                 self.last_error = None
-                return answer.startswith("yes")
+                return text.startswith("yes")
             except HTTPError as exc:
                 last_exc = exc
                 self.last_error = exc
                 if exc.code in (429, 500, 502, 503, 504) and attempt < self.max_retries - 1:
-                    time.sleep(1.0 * (2**attempt))
+                    sleep_s = 2.0 * (2**attempt)
+                    if exc.code == 429:
+                        try:
+                            raw_body = exc.read().decode("utf-8")
+                            err_body = json.loads(raw_body)
+                            for detail in err_body.get("error", {}).get("details", []):
+                                if "retryDelay" in detail:
+                                    raw_delay = detail["retryDelay"].rstrip("s")
+                                    sleep_s = max(sleep_s, float(raw_delay) + 1.0)
+                        except Exception:
+                            sleep_s = max(sleep_s, 5.0)
+                    time.sleep(sleep_s)
                     continue
                 logger.warning("GeminiVerifier HTTP error: %s", exc)
                 return self.safe_default
