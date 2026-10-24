@@ -32,7 +32,7 @@ from typing import Any
 import numpy as np
 
 from .embedders import validate_embedding
-from .guard import normalize_text
+from .guard import exact_match_key
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +298,7 @@ class SQLiteStore:
             ).fetchall()
             if unhashed:
                 updates = [
-                    (hashlib.sha256(normalize_text(q).encode("utf-8")).hexdigest(), rid)
+                    (hashlib.sha256(exact_match_key(q).encode("utf-8")).hexdigest(), rid)
                     for rid, q in unhashed
                 ]
                 self.db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
@@ -339,6 +339,8 @@ class SQLiteStore:
 
         now = time.time()
         blob = embedding.astype(np.float32).tobytes()
+        if query_hash is None:
+            query_hash = hashlib.sha256(exact_match_key(query).encode("utf-8")).hexdigest()
 
         with self._lock:
             cur = self.db.execute(
@@ -397,23 +399,25 @@ class SQLiteStore:
 
             cur = self.db.execute(
                 """SELECT id FROM entries
-                   ORDER BY CASE WHEN last_hit_at IS NULL THEN 0 ELSE 1 END ASC,
-                            last_hit_at ASC,
-                            created_at ASC
+                   ORDER BY COALESCE(last_hit_at, created_at) ASC
                    LIMIT ?""",
                 (entries_to_evict,),
             )
-            evicted_ids = {row[0] for row in cur.fetchall()}
+            evicted_ids = [row[0] for row in cur.fetchall()]
             if evicted_ids:
-                placeholders = ",".join("?" for _ in evicted_ids)
-                self.db.execute(
-                    f"DELETE FROM entries WHERE id IN ({placeholders})",
-                    list(evicted_ids),
-                )
+                chunk_size = 500
+                for i in range(0, len(evicted_ids), chunk_size):
+                    chunk = evicted_ids[i : i + chunk_size]
+                    placeholders = ",".join("?" for _ in chunk)
+                    self.db.execute(
+                        f"DELETE FROM entries WHERE id IN ({placeholders})",
+                        chunk,
+                    )
                 self.db.commit()
                 # In-place index removal without clearing/reloading index
+                evicted_set = set(evicted_ids)
                 for vindex in self._index.values():
-                    vindex.remove_ids(evicted_ids)
+                    vindex.remove_ids(evicted_set)
 
     # ------------------------------------------------------------------
     # Exact Match Lookup

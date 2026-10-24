@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "semantic-cache"
-version = "0.2.0"
+version = "0.3.0"
 description = "Semantic caching layer for LLM calls — match by meaning, not exact text."
 readme = "README.md"
 license = "MIT"
@@ -29,6 +29,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
+exclude = ["scratch"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

@@ -7,6 +7,7 @@ and different entity slots with identical sentence templates).
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
@@ -193,7 +194,7 @@ DEFAULT_STOPWORDS: set[str] = {
     "do", "does", "did",
     "have", "has", "had",
     "can", "could", "would", "should", "will", "shall", "may", "might", "must",
-    "to", "of", "in", "for", "on", "with", "at", "by", "from", "up", "about",
+    "to", "of", "in", "for", "on", "with", "at", "by", "up", "about",
     "into", "over", "after",
     "what", "which", "who", "whom", "this", "that", "these", "those",
     "am", "it", "its", "i", "me", "my", "myself", "we", "our", "ours",
@@ -206,6 +207,7 @@ DEFAULT_PARAPHRASE_SAFE_WORDS: set[str] = {
     "please", "kindly", "tell", "give", "show", "help", "me", "us",
     "play", "city", "book", "film", "movie", "song", "define", "explain",
     "describe", "mean", "meaning", "definition", "query", "question",
+    "wrote",
 }
 
 CONTRACTIONS: list[tuple[str, str]] = [
@@ -245,12 +247,19 @@ CONTRACTIONS: list[tuple[str, str]] = [
 # ---------------------------------------------------------------------------
 
 def normalize_text(text: str) -> str:
-    """Normalize query text for guard comparison and exact matching.
+    """Normalize query text for guard comparison and embedding lookup.
 
     1. Lowercase and strip whitespace.
     2. Expand common apostrophe contractions.
     3. Normalize prefixes (non-, un-).
     4. Strip punctuation and collapse whitespace.
+
+    .. note::
+
+       This function strips **all** symbols (``+``, ``#``, ``%``, ``$``,
+       ``<``, ``>``, ``=``, …) and is therefore **not suitable** for the
+       exact-match key.  Use :func:`exact_match_key` for the exact-match
+       tier instead.
     """
     text = text.lower().strip()
     for pattern, replacement in CONTRACTIONS:
@@ -263,6 +272,34 @@ def normalize_text(text: str) -> str:
     # Replace punctuation (except underscores) with spaces
     text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
+
+
+def exact_match_key(text: str) -> str:
+    """Conservative key for the exact-match tier.
+
+    Unlike ``normalize_text``, this deliberately preserves symbols and
+    operators because they can change an answer (for example C++ vs C# or
+    ``x>5`` vs ``x<5``).
+
+    Steps:
+      1. Unicode NFKC normalisation.
+      2. Case-fold (locale-independent lower-case).
+      3. Collapse whitespace to a single space and strip.
+      4. Strip only trailing ``?``, ``.``, and ``!``.
+    """
+    text = unicodedata.normalize("NFKC", text).casefold()
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.rstrip("?.!").rstrip()
+
+
+def _significant_symbols(text: str) -> list[str]:
+    """Extract operators, currency and symbols that are meaningful in a query."""
+    normalized = unicodedata.normalize("NFKC", text)
+    symbols: list[str] = []
+    for ch in normalized:
+        if ch in "+#%$<>=/&*^~|\\@" or unicodedata.category(ch).startswith("S"):
+            symbols.append(ch)
+    return symbols
 
 
 # ---------------------------------------------------------------------------
@@ -327,9 +364,12 @@ def check_match(
     """Evaluate whether new_query safely matches cached_query.
 
     Returns:
-    - ACCEPT: Difference is only one-sided extra words or paraphrase-safe words.
-    - REJECT: Incompatible numbers, unit order inversion, or negation flips.
-    - VERIFY: Both queries have different content words (slot value substitution).
+    - ACCEPT: Difference is only paraphrase-safe words and order is preserved.
+    - REJECT: Incompatible numbers, unit order inversion, negation flips, or
+      symbol/operator differences.
+    - VERIFY: One-sided extra content words (beyond the safe-word set),
+      both sides have different content words (slot-value substitution), or
+      content words appear in a different order.
     """
     stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
     safe_words = (
@@ -337,6 +377,11 @@ def check_match(
         if paraphrase_safe_words is not None
         else DEFAULT_PARAPHRASE_SAFE_WORDS
     )
+
+    # Significant symbols/operators must match; if they differ, reject.
+    # Checked BEFORE normalization comparison so stripped symbols are not ignored.
+    if _significant_symbols(new_query) != _significant_symbols(cached_query):
+        return GuardResult(GuardVerdict.REJECT, "Significant symbols or operators differ")
 
     norm_new = normalize_text(new_query)
     norm_cached = normalize_text(cached_query)
@@ -396,14 +441,28 @@ def check_match(
     unmatched_new = (content_new - content_cached) - safe_words
     unmatched_cached = (content_cached - content_new) - safe_words
 
-    # Rule (d): VERIFY if both queries have unmatched content words on BOTH sides
+    # Rule (d): VERIFY if content differs in either direction, unless every
+    # addition is explicitly marked safe by the editable safe-word list.
     if unmatched_new and unmatched_cached:
         return GuardResult(
             GuardVerdict.VERIFY,
             f"Different slot values on both sides: {unmatched_new} vs {unmatched_cached}",
         )
 
-    # Rule (e): ACCEPT if difference is one-sided only or empty
+    # Rule (d'): one-sided extra content words that are NOT all safe → VERIFY
+    if unmatched_new or unmatched_cached:
+        return GuardResult(
+            GuardVerdict.VERIFY,
+            f"One-sided content addition: {unmatched_new | unmatched_cached}",
+        )
+
+    # Rule (d''): content words in a different order → VERIFY
+    ordered_new = [t for t in tokens_new if t not in stopwords and t not in safe_words]
+    ordered_cached = [t for t in tokens_cached if t not in stopwords and t not in safe_words]
+    if ordered_new != ordered_cached:
+        return GuardResult(GuardVerdict.VERIFY, "Content words appear in different order")
+
+    # Rule (e): ACCEPT if only safe-word changes remain.
     return GuardResult(
         GuardVerdict.ACCEPT,
         "Acceptable paraphrase with one-sided or safe word additions",

@@ -28,7 +28,7 @@ from .embedders import (
     validate_embedding,
 )
 from .gemini import GeminiAPIError, GeminiClient, GeminiEmbedder
-from .guard import GuardResult, GuardVerdict, check_match, normalize_text
+from .guard import GuardResult, GuardVerdict, check_match, exact_match_key, normalize_text
 from .protocols import CacheStore
 from .store import SQLiteStore
 from .verifier import GeminiVerifier
@@ -58,6 +58,7 @@ __all__ = [
     "GuardResult",
     "GuardVerdict",
     "normalize_text",
+    "exact_match_key",
     # Helpers
     "validate_embedding",
     "is_zero_vector",

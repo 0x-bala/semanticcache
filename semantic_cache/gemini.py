@@ -41,11 +41,14 @@ class GeminiClient:
     def _request(
         self, method: str, payload: dict[str, Any], max_retries: int = 3
     ) -> dict[str, Any]:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{method}?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{method}"
         request = Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": self.api_key,
+            },
             method="POST",
         )
         last_exc: Exception | None = None

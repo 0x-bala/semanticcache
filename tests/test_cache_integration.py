@@ -575,6 +575,37 @@ class TestCacheIntegration:
         hit_b = cache_b.get("Cross-model query")
         assert hit_b is None
 
+    def test_exact_match_preserves_symbols_and_does_not_cross_hit(self) -> None:
+        """Exact-match tier must preserve symbols and never cross-hit on symbol differences."""
+        # Embedder that returns orthogonal vectors so semantic search will miss
+        embedder = HashingEmbedder(dim=128)
+        cache = SemanticCache(embedder=embedder, threshold=0.99, exact_match=True)
+
+        symbol_pairs = [
+            ("What is C++?", ["What is C#?", "What is C?"]),
+            ("Is x>5?", ["Is x<5?", "Is x=5?"]),
+            ("Discount is 5%", ["Discount is $5"]),
+            ("Version 3.5", ["Version 35"]),
+            ("+91 98765", ["91 98765"]),
+        ]
+
+        for stored_query, non_matching_queries in symbol_pairs:
+            cache.set(stored_query, f"Response for {stored_query}")
+            for non_match in non_matching_queries:
+                # Exact match must not hit
+                hit = cache.get(non_match)
+                assert hit is None, (
+                    f"Query {non_match!r} incorrectly hit stored query {stored_query!r}"
+                )
+
+        # But casing and trailing question marks still exact-match
+        cache.set("What is the capital of France?", "Paris")
+        hit = cache.get("what is the capital of france")
+        assert hit is not None
+        assert hit.response == "Paris"
+        assert hit.matched_query == "What is the capital of France?"
+
+
     def test_shadow_mode_estimated_false_hit_rate(self) -> None:
         """Shadow mode runs real compute on cache hits and calculates false-hit rate."""
         embedder = MockRealisticScoreEmbedder()

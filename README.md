@@ -1,5 +1,7 @@
 # Semantic Cache 🧠⚡
 
+> High-performance semantic caching layer for LLM calls — match prompts by meaning rather than exact text, eliminate redundant API calls, and cut latency from seconds to under a millisecond with robust guard protection.
+
 A lightweight, plug-and-play **semantic caching layer** for LLM calls. Instead of matching prompts byte-for-byte, it matches by *meaning* — so near-duplicates and paraphrases return cached answers instantly.
 
 ```
@@ -16,7 +18,7 @@ A lightweight, plug-and-play **semantic caching layer** for LLM calls. Instead o
 |---------|---------|
 | 🔌 Plug-and-play | Drop-in decorator for any `fn(prompt) -> str` |
 | 🧠 Semantic matching | Cosine similarity on embeddings |
-| 💾 SQLite backend | Persistent, zero-server storage |
+| 💾 SQLite backend | Persistent, zero-server storage (`SQLiteStore()` with no path is in-memory) |
 | ⏰ TTL support | Auto-expire stale entries |
 | 🗂️ Namespaces | Isolate caches per model / system prompt / user |
 | 📊 Stats | Hit-rate, misses, seconds saved |
@@ -39,13 +41,16 @@ from semantic_cache import SemanticCache
 
 cache = SemanticCache(threshold=0.85, ttl=3600)
 
+# In production, replace this mock with your actual LLM call (e.g. OpenAI / Gemini)
+def mock_llm(prompt: str) -> str:
+    return f"Response to: {prompt}"
+
 @cache.cached(namespace="gpt4:v1")
 def ask_llm(prompt: str) -> str:
-    # your actual LLM call here
-    return openai.chat(prompt)
+    return mock_llm(prompt)
 
-ask_llm("What is the capital of France?")   # MISS → calls LLM
-ask_llm("what's the capital of france")      # HIT  → instant
+print(ask_llm("What is the capital of France?"))   # MISS → calls LLM
+print(ask_llm("what's the capital of france"))      # HIT  → instant
 ```
 
 ## Production checklist
@@ -72,16 +77,26 @@ context = CacheContext(
     locale="en-IN",
 )
 
+def mock_llm(prompt: str) -> str:
+    return f"Response for: {prompt}"
+
 cache = SemanticCache(threshold=0.92, ttl=300)
-result = cache.get_or_compute(prompt, call_llm, namespace=context.namespace())
+result = cache.get_or_compute(
+    "Tell me about Paris",
+    mock_llm,
+    namespace=context.namespace(),
+)
+print(result.response)
 ```
 
 For async services, use `async_get_or_compute()` or `@cache.async_cached()`.
 Ordinary async requests coalesce within one event loop; bypass calls always
 compute independently and never read or write cache state.
 
-SQLite is suitable for a single process or local deployment. The public
-`CacheStore` protocol allows a Redis, Postgres, or vector-database backend for
+SQLite is suitable for a single process or local deployment. Note that `SQLiteStore()`
+with no path is in-memory (`:memory:`) by default and will not persist across restarts;
+pass a file path (e.g. `SQLiteStore("cache.db")`) for persistent on-disk storage.
+The public `CacheStore` protocol allows a Redis, Postgres, or vector-database backend for
 multi-instance deployments. Use encryption, access controls, and retention
 policies appropriate to the cached data.
 
@@ -164,7 +179,7 @@ SemanticCache
 | `ttl` | `None` | Seconds before entries expire (`None` = never) |
 | `namespace` | `"default"` | Partition key (per model / user / prompt version) |
 | `embedder` | `HashingEmbedder()` | Any object with `.embed(text) -> np.ndarray` |
-| `store` | `SQLiteStore()` | Any compatible store (in-memory by default) |
+| `store` | `SQLiteStore()` | Any compatible store (in-memory `:memory:` by default with no path; pass a file path for persistence) |
 
 ### Methods
 

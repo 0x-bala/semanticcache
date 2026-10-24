@@ -43,7 +43,7 @@ from .embedders import (
     is_zero_vector,
     validate_embedding,
 )
-from .guard import GuardVerdict, check_match, normalize_text
+from .guard import GuardVerdict, check_match, exact_match_key, normalize_text
 from .protocols import CacheStore
 from .store import SQLiteStore
 
@@ -449,7 +449,8 @@ class SemanticCache:
         eff_verify_always = self.verify_always if verify_always is None else verify_always
 
         norm_query = normalize_text(query)
-        query_hash = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()
+        em_key = exact_match_key(query)
+        query_hash = hashlib.sha256(em_key.encode("utf-8")).hexdigest()
 
         # Exact match tier: check hash before embedding API call
         if self.exact_match and hasattr(self.store, "find_exact"):
@@ -471,7 +472,9 @@ class SemanticCache:
                         try:
                             self._on_hit(result)
                         except Exception:
-                            pass
+                            logger.debug(
+                                "on_hit callback raised", exc_info=True
+                            )
                     return result
             except Exception as exc:
                 logger.warning("Exact match lookup failed: %s", exc)
@@ -514,7 +517,7 @@ class SemanticCache:
                 try:
                     self._on_miss(query)
                 except Exception:
-                    pass
+                    logger.debug("on_miss callback raised", exc_info=True)
             return None
 
         # Guard evaluation
@@ -528,7 +531,9 @@ class SemanticCache:
                     try:
                         self._on_miss(query)
                     except Exception:
-                        pass
+                        logger.debug(
+                            "on_miss callback raised", exc_info=True
+                        )
                 return None
             elif guard_result.verdict == GuardVerdict.VERIFY:
                 should_verify = eff_verify_always or (
@@ -549,7 +554,10 @@ class SemanticCache:
                                 try:
                                     self._on_miss(query)
                                 except Exception:
-                                    pass
+                                    logger.debug(
+                                        "on_miss callback raised",
+                                        exc_info=True,
+                                    )
                             return None
                         self.stats.verify_accepts += 1
                     else:
@@ -559,7 +567,10 @@ class SemanticCache:
                             try:
                                 self._on_miss(query)
                             except Exception:
-                                pass
+                                logger.debug(
+                                    "on_miss callback raised",
+                                    exc_info=True,
+                                )
                         return None
 
         # Hit accepted
@@ -589,7 +600,7 @@ class SemanticCache:
             try:
                 self._on_hit(result)
             except Exception:
-                pass
+                logger.debug("on_hit callback raised", exc_info=True)
         return result
 
     def set(
@@ -621,7 +632,8 @@ class SemanticCache:
 
         ns = _validate_namespace(namespace or self.namespace)
         norm_query = normalize_text(query)
-        query_hash = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()
+        em_key = exact_match_key(query)
+        query_hash = hashlib.sha256(em_key.encode("utf-8")).hexdigest()
 
         try:
             vec = self._embedding_lru.get(self._embedder_name, norm_query)
@@ -758,7 +770,7 @@ class SemanticCache:
                 try:
                     self._on_error(query, exc)
                 except Exception:
-                    pass
+                    logger.debug("on_error callback raised", exc_info=True)
             slot[1] = exc
             slot[0].set()
             with self._inflight_lock:

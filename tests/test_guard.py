@@ -140,3 +140,88 @@ class TestGuardRules:
             paraphrase_safe_words={"me"},
         )
         assert res.verdict == GuardVerdict.ACCEPT
+
+    @pytest.mark.parametrize(
+        ("q1", "q2"),
+        [
+            ("What is C++?", "What is C#?"),
+            ("What is C++?", "What is C?"),
+            ("What is C#?", "What is C?"),
+            ("Is x>5?", "Is x<5?"),
+            ("Is x>5?", "Is x=5?"),
+            ("Is x<5?", "Is x=5?"),
+            ("Discount is 5%", "Discount is $5"),
+            ("Version 3.5", "Version 35"),
+            ("+91 98765", "91 98765"),
+        ],
+    )
+    def test_symbol_and_operator_pairs_do_not_exact_match_or_accept(
+        self, q1: str, q2: str
+    ) -> None:
+        from semantic_cache.guard import exact_match_key
+
+        assert exact_match_key(q1) != exact_match_key(q2), (
+            f"Expected different exact_match_key for {q1!r} and {q2!r}"
+        )
+        res1 = check_match(q1, q2)
+        assert res1.verdict != GuardVerdict.ACCEPT, (
+            f"check_match({q1!r}, {q2!r}) unexpectedly returned ACCEPT ({res1.reason})"
+        )
+        res2 = check_match(q2, q1)
+        assert res2.verdict != GuardVerdict.ACCEPT, (
+            f"check_match({q2!r}, {q1!r}) unexpectedly returned ACCEPT ({res2.reason})"
+        )
+
+    def test_exact_match_key_capital_of_france(self) -> None:
+        from semantic_cache.guard import exact_match_key
+
+        q1 = "What is the capital of France?"
+        q2 = "what is the capital of france"
+        assert exact_match_key(q1) == exact_match_key(q2)
+        assert check_match(q1, q2).verdict == GuardVerdict.ACCEPT
+
+    @pytest.mark.parametrize(
+        ("new_q", "cached_q"),
+        [
+            ("Is it safe to take paracetamol?", "Is it safe to take paracetamol with alcohol?"),
+            ("Write a poem about the sea", "Write a poem about the sea in French"),
+            (
+                "Summarize this article",
+                "Summarize this article and translate it to French",
+            ),
+            ("List fruits", "List red fruits"),
+            ("Show me restaurants", "Show me vegetarian restaurants"),
+            ("Flights from Chennai to Delhi", "Flights from Delhi to Chennai"),
+            ("from Pune to Mumbai", "from Mumbai to Pune"),
+        ],
+    )
+    def test_extra_content_words_and_reordering_return_verify(
+        self, new_q: str, cached_q: str
+    ) -> None:
+        res = check_match(new_q, cached_q)
+        assert res.verdict == GuardVerdict.VERIFY, (
+            f"Expected VERIFY for {new_q!r} ~ {cached_q!r}, got {res.verdict} ({res.reason})"
+        )
+        res_rev = check_match(cached_q, new_q)
+        assert res_rev.verdict == GuardVerdict.VERIFY, (
+            f"Expected VERIFY for {cached_q!r} ~ {new_q!r}, "
+            f"got {res_rev.verdict} ({res_rev.reason})"
+        )
+
+    @pytest.mark.parametrize(
+        ("new_q", "cached_q"),
+        [
+            ("what's the capital of france", "What is the capital of France?"),
+            ("How can I reset my password?", "How do I reset my password?"),
+            ("Who wrote the play Hamlet?", "Who wrote Hamlet?"),
+            ("Please summarize the French Revolution", "Summarize the French Revolution"),
+        ],
+    )
+    def test_required_core_paraphrases_still_accept(
+        self, new_q: str, cached_q: str
+    ) -> None:
+        res = check_match(new_q, cached_q)
+        assert res.verdict == GuardVerdict.ACCEPT, (
+            f"Expected ACCEPT for {new_q!r} ~ {cached_q!r}, got {res.verdict} ({res.reason})"
+        )
+
