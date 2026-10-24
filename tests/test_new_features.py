@@ -271,7 +271,7 @@ class TestGeminiVerifier:
 
     def test_verifier_sends_key_in_header_never_in_url(self):
         """API key is sent in x-goog-api-key header and never in URL."""
-        secret_key = "AIzaSySecretVerifierKeyTest999"
+        secret_key = "TEST_VERIFIER_API_KEY"
         verifier = GeminiVerifier(api_key=secret_key)
         fake_response = {"candidates": [{"content": {"parts": [{"text": "yes"}]}}]}
         import io
@@ -303,7 +303,7 @@ class TestGeminiVerifier:
         """GeminiClient sends key in x-goog-api-key header and never in URL."""
         from semantic_cache.gemini import GeminiClient
 
-        secret_key = "AIzaSySecretGeminiClientKeyTest888"
+        secret_key = "TEST_GEMINI_CLIENT_KEY"
         client = GeminiClient(api_key=secret_key)
         fake_response = {"candidates": [{"content": {"parts": [{"text": "response text"}]}}]}
         import io
@@ -334,7 +334,7 @@ class TestGeminiVerifier:
         import logging
         caplog.set_level(logging.DEBUG)
 
-        secret_key = "AIzaSySuperSecretDoNotLog12345"
+        secret_key = "TEST_REDACTION_API_KEY"
         verifier = GeminiVerifier(api_key=secret_key, log_queries=True)
         fake_response = {"candidates": [{"content": {"parts": [{"text": "yes"}]}}]}
         import io

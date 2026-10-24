@@ -19,6 +19,7 @@ New in v0.2.0:
 
 from .cache import CacheResult, SemanticCache, Stats
 from .context import CacheContext
+from .cross_encoder import CrossEncoderVerifier
 from .embedders import (
     Embedder,
     EmbeddingLRUCache,
@@ -53,6 +54,7 @@ __all__ = [
     "GeminiEmbedder",
     "GeminiAPIError",
     "GeminiVerifier",
+    "CrossEncoderVerifier",
     # Guard
     "check_match",
     "GuardResult",

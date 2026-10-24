@@ -531,62 +531,94 @@ class SQLiteStore:
     # Reads
     # ------------------------------------------------------------------
 
+    def search_candidates(
+        self,
+        namespace: str,
+        embedding: np.ndarray,
+        embedder: str | None = None,
+        *,
+        top_k: int = 5,
+        min_similarity: float = -1.0,
+    ) -> list[Entry]:
+        """Return up to ``top_k`` valid candidates sorted by cosine score descending.
+
+        Candidates below ``min_similarity`` are excluded before materializing
+        database rows. Expired or concurrently deleted entries trigger one index
+        rebuild, so a stale highest-scoring row cannot hide the next candidate.
+        The legacy :meth:`search` API remains available for older backends.
+        """
+        _validate_namespace(namespace)
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+            raise ValueError("top_k must be a positive integer")
+        if top_k > 500:
+            raise ValueError("top_k must not exceed 500")
+        if not isinstance(min_similarity, (int, float)) or not np.isfinite(min_similarity):
+            raise ValueError("min_similarity must be a finite number")
+        if min_similarity < -1.0 or min_similarity > 1.0:
+            raise ValueError("min_similarity must be in [-1.0, 1.0]")
+
+        embedding = validate_embedding(embedding, self._embedding_dim)
+        index_key = f"{namespace}::{embedder}" if embedder else namespace
+
+        with self._lock:
+            for attempt in range(2):
+                vindex = self._load(namespace, embedder)
+                ids, mat = vindex.ids, vindex.active_matrix()
+                if not ids:
+                    return []
+
+                scores = mat @ embedding
+                eligible = np.flatnonzero(scores >= float(min_similarity))
+                if eligible.size == 0:
+                    return []
+                order = eligible[np.argsort(scores[eligible])[::-1][:top_k]]
+                candidate_ids = [ids[int(i)] for i in order]
+                placeholders = ",".join("?" for _ in candidate_ids)
+                rows = self.db.execute(
+                    "SELECT id, query, response, expires_at FROM entries "
+                    f"WHERE id IN ({placeholders})",
+                    candidate_ids,
+                ).fetchall()
+                rows_by_id = {int(row[0]): row for row in rows}
+                now = time.time()
+                stale = any(
+                    eid not in rows_by_id
+                    or (rows_by_id[eid][3] is not None and rows_by_id[eid][3] <= now)
+                    for eid in candidate_ids
+                )
+                if stale:
+                    self._index.pop(index_key, None)
+                    if attempt == 0:
+                        continue
+
+                results: list[Entry] = []
+                for idx in order:
+                    row_id = ids[int(idx)]
+                    row = rows_by_id.get(row_id)
+                    if row is None or (row[3] is not None and row[3] <= now):
+                        continue
+                    results.append(
+                        Entry(
+                            id=int(row[0]),
+                            query=row[1],
+                            response=row[2],
+                            score=float(scores[int(idx)]),
+                        )
+                    )
+                return results
+        return []
+
     def search(
         self,
         namespace: str,
         embedding: np.ndarray,
         embedder: str | None = None,
     ) -> Entry | None:
-        """Find the nearest stored entry by cosine similarity.
-
-        Returns None when the namespace is empty, all entries have expired,
-        or every embedding BLOB is corrupt.  Never recurses more than once
-        (rebuilt index is always used for the second lookup).
-        """
-        _validate_namespace(namespace)
-        embedding = validate_embedding(embedding, self._embedding_dim)
-        index_key = f"{namespace}::{embedder}" if embedder else namespace
-
-        with self._lock:
-            vindex = self._load(namespace, embedder)
-            ids, mat = vindex.ids, vindex.active_matrix()
-            if not ids:
-                return None
-
-            scores = mat @ embedding  # cosine similarity (unit vecs)
-            best_idx = int(np.argmax(scores))
-            best_id = ids[best_idx]
-            best_score = float(scores[best_idx])
-
-            row = self.db.execute(
-                "SELECT query, response, expires_at FROM entries WHERE id=?",
-                (best_id,),
-            ).fetchone()
-
-            if row is None:
-                # Row was deleted between index build and now
-                self._index.pop(index_key, None)
-                return None
-
-            if row[2] is not None and row[2] <= time.time():
-                # Best entry has expired; rebuild once and re-search
-                self._index.pop(index_key, None)
-                vindex2 = self._load(namespace, embedder)
-                ids2, mat2 = vindex2.ids, vindex2.active_matrix()
-                if not ids2:
-                    return None
-                scores2 = mat2 @ embedding
-                best_idx2 = int(np.argmax(scores2))
-                best_id = ids2[best_idx2]
-                best_score = float(scores2[best_idx2])
-                row = self.db.execute(
-                    "SELECT query, response, expires_at FROM entries WHERE id=?",
-                    (best_id,),
-                ).fetchone()
-                if row is None or (row[2] is not None and row[2] <= time.time()):
-                    return None
-
-            return Entry(id=best_id, query=row[0], response=row[1], score=best_score)
+        """Find the nearest stored entry by cosine similarity (legacy Top-1 API)."""
+        candidates = self.search_candidates(
+            namespace, embedding, embedder=embedder, top_k=1, min_similarity=-1.0
+        )
+        return candidates[0] if candidates else None
 
     def record_hit(self, entry_id: int) -> None:
         with self._lock:

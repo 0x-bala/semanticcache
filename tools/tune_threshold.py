@@ -1,8 +1,8 @@
 """Real-data threshold tuning tool for SemanticCache.
 
-Evaluates precision, recall, and F1 across candidate similarity thresholds
-with the hit guard ON vs OFF, and determines the lowest threshold with zero
-wrong hits (false positives).
+Evaluates precision, recall, F1, and precision-weighted F0.5 across candidate
+similarity thresholds with the hit guard ON vs OFF, and identifies conservative
+thresholds that meet a precision floor with zero wrong hits (false positives).
 
 Usage:
     python tools/tune_threshold.py --csv path/to/dataset.csv
@@ -183,11 +183,20 @@ def evaluate_dataset(
     return rows, lowest_zero_wrong_no_guard, lowest_zero_wrong_guard
 
 
+def _f_beta(precision: float, recall: float, beta: float = 0.5) -> float:
+    """F-beta score; beta < 1 weights precision more heavily than recall."""
+    denom = beta * beta * precision + recall
+    if denom <= 0.0:
+        return 0.0
+    return (1.0 + beta * beta) * precision * recall / denom
+
+
 def print_report(
     rows: list[MetricRow],
     lowest_ng: float | None,
     lowest_g: float | None,
     total_pairs: int,
+    min_precision: float = 0.99,
 ) -> None:
     """Print ASCII comparison table and recommendation summary."""
     print("=" * 110)
@@ -196,7 +205,7 @@ def print_report(
     header = (
         f"{'Thresh':<7} | "
         f"{'HR(Off)':<8} {'Prec':<7} {'Wrong':<6} | "
-        f"{'HR(On)':<8} {'Prec':<7} {'F1':<7} {'Wrong':<6} {'Lost':<5}"
+        f"{'HR(On)':<8} {'Prec':<7} {'F0.5':<7} {'Wrong':<6} {'Lost':<5}"
     )
     print(header)
     print("-" * 110)
@@ -209,7 +218,7 @@ def print_report(
         )
         part2 = (
             f"{r.hit_rate_guard:<8.1%} {r.precision_guard:<7.1%} "
-            f"{r.f1_guard:<7.1%} {r.wrong_hits_guard:<6d} "
+            f"{_f_beta(r.precision_guard, r.recall_guard, 0.5):<7.1%} {r.wrong_hits_guard:<6d} "
             f"{r.paraphrases_lost_to_verify:<5d}"
         )
         print(part1 + part2)
@@ -223,17 +232,32 @@ def print_report(
     print(f" Lowest threshold with 0 wrong hits WITH guard    : {lowest_g_str}")
 
     # Pure data-driven recommendation from the table (no hard-coded ranges)
-    safe_rows = [r for r in rows if r.wrong_hits_guard == 0]
+    safe_rows = [
+        r for r in rows
+        if r.wrong_hits_guard == 0 and r.precision_guard >= min_precision
+    ]
     if safe_rows:
-        # Maximize F1 score with guard, breaking ties with higher hit rate, then lowest threshold
-        optimal_row = max(safe_rows, key=lambda r: (r.f1_guard, r.hit_rate_guard, -r.threshold))
+        # Prefer precision-constrained F0.5, then hit rate, then the lower threshold.
+        optimal_row = max(
+            safe_rows,
+            key=lambda r: (
+                _f_beta(r.precision_guard, r.recall_guard, 0.5),
+                r.hit_rate_guard,
+                -r.threshold,
+            ),
+        )
         print(f"\n Recommended Threshold (Data-Driven)    : {optimal_row.threshold:.2f}")
         print(f"   Hit rate with guard   : {optimal_row.hit_rate_guard:.1%}")
         print(f"   Wrong hits with guard : {optimal_row.wrong_hits_guard}")
         print(f"   Hit rate without guard: {optimal_row.hit_rate_no_guard:.1%}")
         print(f"   Wrong hits without g. : {optimal_row.wrong_hits_no_guard}")
         print(f"   Precision with guard  : {optimal_row.precision_guard:.1%}")
-        print(f"   F1 score with guard   : {optimal_row.f1_guard:.1%}")
+        f0_5 = _f_beta(optimal_row.precision_guard, optimal_row.recall_guard, 0.5)
+        print(f"   F0.5 score with guard : {f0_5:.1%}")
+        print(
+            f"   Minimum precision gate: {min_precision:.1%}; "
+            "also requires zero false positives"
+        )
         print(f"   True paraphrases lost to VERIFY: {optimal_row.paraphrases_lost_to_verify}")
     elif rows:
         min_wrong_row = min(rows, key=lambda r: r.wrong_hits_guard)
@@ -256,6 +280,15 @@ def main() -> None:
         help="Embedder: 'hashing' (default, offline) or 'gemini' (requires GEMINI_API_KEY)",
     )
     parser.add_argument("--step", type=float, default=0.02, help="Threshold step size")
+    parser.add_argument(
+        "--min-precision",
+        type=float,
+        default=0.99,
+        help=(
+            "Minimum precision for recommendation (default: 0.99; selection also "
+            "requires zero false positives)"
+        ),
+    )
     args = parser.parse_args()
 
     # 1. Dataset loading & CSV validation
@@ -284,8 +317,10 @@ def main() -> None:
     else:
         embedder = HashingEmbedder()
 
+    if not (0.0 <= args.min_precision <= 1.0):
+        parser.error("--min-precision must be between 0 and 1")
     rows, lowest_ng, lowest_g = evaluate_dataset(dataset, embedder=embedder, step=args.step)
-    print_report(rows, lowest_ng, lowest_g, len(dataset))
+    print_report(rows, lowest_ng, lowest_g, len(dataset), min_precision=args.min_precision)
 
 
 if __name__ == "__main__":

@@ -111,6 +111,9 @@ class GeminiEmbedder(GeminiClient):
         with minimal quality loss.
     """
 
+    # Conservative starting point only; calibrate on a held-out labeled dataset.
+    default_threshold = 0.88
+
     #: Minimum allowed output dimensionality for gemini-embedding-001.
     MIN_OUTPUT_DIM = 128
     #: Maximum (and default) output dimensionality for gemini-embedding-001.

@@ -14,13 +14,18 @@ Security note:
 from __future__ import annotations
 
 import logging
-import re
 import zlib
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from .guard import DEFAULT_PARAPHRASE_SAFE_WORDS, DEFAULT_STOPWORDS, normalize_text
+
 logger = logging.getLogger(__name__)
+
+# Keep this feature policy aligned with the guard: function/query-framing words
+# should not outweigh the informative content words in a short prompt.
+_HASHING_NONCONTENT_WORDS = DEFAULT_STOPWORDS | DEFAULT_PARAPHRASE_SAFE_WORDS
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -114,7 +119,16 @@ class HashingEmbedder:
       semantic differences.
     - Empty or whitespace-only input returns a zero vector.  Callers that
       receive a zero vector should treat the result as a cache miss.
+
+    Embedding format v2 weights content-word features more strongly than
+    character n-grams. ``cache_version`` changes the cache's embedder key so
+    persisted vectors from older feature formats are never compared with v2.
     """
+
+    cache_version = 2
+
+    # Conservative starting point only; calibrate on a held-out labeled dataset.
+    default_threshold = 0.90
 
     def __init__(self, dim: int = 1024, ngram: int = 3) -> None:
         if not (_MIN_DIM <= dim <= _MAX_DIM):
@@ -126,25 +140,31 @@ class HashingEmbedder:
 
     def embed(self, text: str) -> np.ndarray:
         """Return a unit-normalised float32 vector, or a zero vector for empty input."""
-        _validate_text(text)
-        text = re.sub(r"[^\w\s]", "", text.lower())
-        text = re.sub(r"\s+", " ", text).strip()
+        # Use the same contraction/punctuation normalization as the guard and
+        # embedding LRU key. Previously, the LRU could key on "what is ..."
+        # while the embedder encoded the raw text "what's ..." differently.
+        text = normalize_text(_validate_text(text))
 
         vec = np.zeros(self.dim, dtype=np.float32)
         if not text:
             # Empty after normalisation — return zero vector
             return vec
 
+        tokens = text.split()
         padded = f" {text} "
-        features: list[str] = [
-            padded[i : i + self.ngram]
-            for i in range(len(padded) - self.ngram + 1)
-        ]
-        features += text.split()
+        # Character n-grams provide typo tolerance, but should not dominate
+        # paraphrases that retain the same informative words.
+        for i in range(len(padded) - self.ngram + 1):
+            feature = f"char:{padded[i : i + self.ngram]}"
+            vec[zlib.crc32(feature.encode("utf-8")) % self.dim] += 0.25
 
-        for f in features:
-            # zlib.crc32 always returns unsigned int in Python 3
-            vec[zlib.crc32(f.encode("utf-8")) % self.dim] += 1.0
+        for token in tokens:
+            word_feature = f"word:{token}"
+            vec[zlib.crc32(word_feature.encode("utf-8")) % self.dim] += 1.0
+
+            if token not in _HASHING_NONCONTENT_WORDS:
+                content_feature = f"content:{token}"
+                vec[zlib.crc32(content_feature.encode("utf-8")) % self.dim] += 2.5
 
         norm = float(np.linalg.norm(vec))
         return (vec / norm).astype(np.float32) if norm > 0.0 else vec
@@ -167,6 +187,9 @@ class SentenceTransformerEmbedder:
     - Embedding similarity does not guarantee answer equivalence.
     - Model quality varies; always validate on your actual query distribution.
     """
+
+    # Starting point only; thresholds vary across models and task domains.
+    default_threshold = 0.82
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2") -> None:
         try:

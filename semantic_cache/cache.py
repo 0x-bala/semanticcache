@@ -31,7 +31,7 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -43,7 +43,13 @@ from .embedders import (
     is_zero_vector,
     validate_embedding,
 )
-from .guard import GuardVerdict, check_match, exact_match_key, normalize_text
+from .guard import (
+    GuardVerdict,
+    check_match,
+    exact_match_key,
+    is_time_sensitive_query,
+    normalize_text,
+)
 from .protocols import CacheStore
 from .store import SQLiteStore
 
@@ -84,6 +90,14 @@ def _detect_embedder_name(embedder: Any) -> str:
     if hasattr(embedder, "name") and embedder.name:
         return str(embedder.name)
     cls_name = embedder.__class__.__name__
+    # Embedding algorithms that change their vector representation should
+    # expose cache_version. Partitioning by version prevents cosine comparisons
+    # between vectors produced by incompatible feature formats.
+    if hasattr(embedder, "cache_version"):
+        version = str(embedder.cache_version)
+        if hasattr(embedder, "dim"):
+            return f"{cls_name}:v{version}:{embedder.dim}"
+        return f"{cls_name}:v{version}"
     if hasattr(embedder, "dim"):
         return f"{cls_name}:{embedder.dim}"
     return cls_name
@@ -255,7 +269,7 @@ class SemanticCache:
         self,
         embedder: Embedder | None = None,
         store: CacheStore | None = None,
-        threshold: float = 0.85,
+        threshold: float | None = None,
         ttl: float | None = None,
         namespace: str = "default",
         enabled: bool = True,
@@ -273,11 +287,26 @@ class SemanticCache:
         shadow_comparator: ShadowComparator | None = None,
         exact_match: bool = True,
         embedding_lru_capacity: int = 1000,
+        top_k: int = 5,
+        synonym_groups: Iterable[Iterable[str]] | None = None,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
         self._embedder_name: str = _detect_embedder_name(self.embedder)
         self.store: CacheStore = store or SQLiteStore()
+        if threshold is None:
+            threshold = float(getattr(self.embedder, "default_threshold", 0.85))
         self.threshold: float = _validate_threshold(threshold)
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+            raise ValueError("top_k must be a positive integer")
+        if top_k > 500:
+            raise ValueError("top_k must not exceed 500")
+        self.top_k = top_k
+        normalized_groups: list[frozenset[str]] = []
+        for group in synonym_groups or ():
+            words = frozenset(str(word).strip().lower() for word in group if str(word).strip())
+            if len(words) >= 2:
+                normalized_groups.append(words)
+        self.synonym_groups = tuple(normalized_groups)
         self.ttl = ttl
         self.namespace: str = _validate_namespace(namespace)
         self.enabled: bool = enabled
@@ -448,6 +477,17 @@ class SemanticCache:
         use_guard = self.guard if guard is None else guard
         eff_verify_always = self.verify_always if verify_always is None else verify_always
 
+        # Relative-time prompts are never reused by this cache. This avoids stale
+        # results for wording such as "current price" or "latest version".
+        if is_time_sensitive_query(query):
+            self.stats.misses += 1
+            if self._on_miss:
+                try:
+                    self._on_miss(query)
+                except Exception:
+                    logger.debug("on_miss callback raised", exc_info=True)
+            return None
+
         norm_query = normalize_text(query)
         em_key = exact_match_key(query)
         query_hash = hashlib.sha256(em_key.encode("utf-8")).hexdigest()
@@ -499,19 +539,69 @@ class SemanticCache:
             return None
 
         try:
-            if hasattr(self.store, "search"):
+            candidates = None
+            candidate_search = getattr(self.store, "search_candidates", None)
+            if callable(candidate_search):
+                try:
+                    candidates = candidate_search(
+                        ns, vec, embedder=self._embedder_name,
+                        top_k=self.top_k, min_similarity=eff_threshold,
+                    )
+                except TypeError:
+                    try:
+                        candidates = candidate_search(
+                            ns, vec, top_k=self.top_k, min_similarity=eff_threshold
+                        )
+                    except TypeError:
+                        candidates = candidate_search(ns, vec)
+            else:
                 try:
                     entry = self.store.search(ns, vec, embedder=self._embedder_name)
                 except TypeError:
                     entry = self.store.search(ns, vec)
-            else:
-                entry = self.store.search(ns, vec)
+                candidates = [entry] if entry is not None else []
         except Exception as exc:
             logger.warning("Store search failed: %s", exc)
             self.stats.misses += 1
             return None
 
-        if entry is None or entry.score < eff_threshold:
+        # Evaluate candidates from highest to lowest score. A rejected Top-1
+        # vector match must not hide a safe Top-2/Top-K candidate.
+        accepted_entry = None
+        for entry in candidates or []:
+            if entry is None or entry.score < eff_threshold:
+                continue
+
+            if use_guard:
+                guard_result = check_match(
+                    query, entry.query, synonym_groups=self.synonym_groups
+                )
+                if guard_result.verdict == GuardVerdict.REJECT:
+                    logger.debug(
+                        "Guard REJECT candidate id=%s: %s", entry.id, guard_result.reason
+                    )
+                    self.stats.guard_rejects += 1
+                    continue
+                if guard_result.verdict == GuardVerdict.VERIFY:
+                    should_verify = eff_verify_always or (
+                        entry.score < eff_threshold + self.guard_buffer
+                    )
+                    if should_verify:
+                        if self.verifier is None:
+                            continue
+                        self.stats.verify_calls += 1
+                        try:
+                            verified = bool(self.verifier(query, entry.query))
+                        except Exception as exc:
+                            logger.warning("Verifier raised exception: %s", exc)
+                            verified = False
+                        if not verified:
+                            continue
+                        self.stats.verify_accepts += 1
+            accepted_entry = entry
+            break
+
+        if accepted_entry is None:
             self.stats.misses += 1
             if self._on_miss:
                 try:
@@ -520,59 +610,7 @@ class SemanticCache:
                     logger.debug("on_miss callback raised", exc_info=True)
             return None
 
-        # Guard evaluation
-        if use_guard:
-            guard_result = check_match(query, entry.query)
-            if guard_result.verdict == GuardVerdict.REJECT:
-                logger.debug("Guard REJECT: %s", guard_result.reason)
-                self.stats.guard_rejects += 1
-                self.stats.misses += 1
-                if self._on_miss:
-                    try:
-                        self._on_miss(query)
-                    except Exception:
-                        logger.debug(
-                            "on_miss callback raised", exc_info=True
-                        )
-                return None
-            elif guard_result.verdict == GuardVerdict.VERIFY:
-                should_verify = eff_verify_always or (
-                    entry.score < eff_threshold + self.guard_buffer
-                )
-                if should_verify:
-                    if self.verifier is not None:
-                        self.stats.verify_calls += 1
-                        try:
-                            verified = self.verifier(query, entry.query)
-                        except Exception as exc:
-                            logger.warning("Verifier raised exception: %s", exc)
-                            verified = False
-
-                        if not verified:
-                            self.stats.misses += 1
-                            if self._on_miss:
-                                try:
-                                    self._on_miss(query)
-                                except Exception:
-                                    logger.debug(
-                                        "on_miss callback raised",
-                                        exc_info=True,
-                                    )
-                            return None
-                        self.stats.verify_accepts += 1
-                    else:
-                        # If no verifier configured, treat VERIFY as a miss
-                        self.stats.misses += 1
-                        if self._on_miss:
-                            try:
-                                self._on_miss(query)
-                            except Exception:
-                                logger.debug(
-                                    "on_miss callback raised",
-                                    exc_info=True,
-                                )
-                        return None
-
+        entry = accepted_entry
         # Hit accepted
         self.store.record_hit(entry.id)
         self.stats.hits += 1
@@ -624,7 +662,7 @@ class SemanticCache:
             The time (seconds) it took to compute *response*.  Used to estimate
             ``stats.seconds_saved`` on future hits.
         """
-        if not self.enabled:
+        if not self.enabled or is_time_sensitive_query(query):
             return
 
         if not isinstance(response, str) or not response:

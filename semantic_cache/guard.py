@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from enum import Enum
 
 
@@ -188,6 +190,12 @@ NEGATION_SCOPE_WORDS: set[str] = {
     "none",
 }
 
+# When both queries state an explicit question type, a different wh-word can
+# indicate a different requested answer (for example "who" vs "what").
+QUESTION_INTENT_WORDS: set[str] = {
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+}
+
 DEFAULT_STOPWORDS: set[str] = {
     "a", "an", "the",
     "is", "are", "was", "were", "be", "been", "being",
@@ -240,6 +248,94 @@ CONTRACTIONS: list[tuple[str, str]] = [
     (r"'d\b", " would"),
     (r"'m\b", " am"),
 ]
+
+
+# Treat these as dynamic scopes. The cache layer bypasses storage and retrieval
+# for them by default because identical text such as "latest price" can age.
+TIME_SENSITIVE_TOKENS: set[str] = {
+    "today", "yesterday", "tomorrow", "now", "currently", "current",
+    "latest", "recent", "recently", "tonight", "live", "updated",
+    "this_week", "this_month", "this_year", "right_now",
+}
+
+# Opposites that can occur in highly similar embeddings. Keep this list
+# intentionally explicit; do not use broad stemming or inferred antonyms.
+ANTONYM_PAIRS: tuple[tuple[str, str], ...] = (
+    ("enable", "disable"), ("import", "export"), ("encrypt", "decrypt"),
+    ("increase", "decrease"), ("upgrade", "downgrade"), ("min", "max"),
+    ("minimum", "maximum"), ("asc", "desc"), ("ascending", "descending"),
+    ("before", "after"), ("start", "stop"), ("buy", "sell"),
+    ("allow", "block"), ("allow", "deny"), ("accept", "reject"),
+    ("add", "remove"), ("open", "close"), ("connect", "disconnect"),
+    ("install", "uninstall"), ("on", "off"), ("increase", "reduce"),
+    ("include", "exclude"), ("enter", "exit"), ("lock", "unlock"),
+)
+
+# Exact linear conversions only. Currency, temperature, and storage units are
+# deliberately excluded because their conversion rules can be context-dependent.
+UNIT_FACTORS: dict[str, tuple[str, Decimal]] = {
+    "km": ("length_m", Decimal("1000")),
+    "kilometer": ("length_m", Decimal("1000")), "kilometers": ("length_m", Decimal("1000")),
+    "kilometre": ("length_m", Decimal("1000")), "kilometres": ("length_m", Decimal("1000")),
+    "mile": ("length_m", Decimal("1609.344")), "miles": ("length_m", Decimal("1609.344")),
+    "m": ("length_m", Decimal("1")), "meter": ("length_m", Decimal("1")),
+    "meters": ("length_m", Decimal("1")),
+    "metre": ("length_m", Decimal("1")),
+    "metres": ("length_m", Decimal("1")),
+    "cm": ("length_m", Decimal("0.01")), "mm": ("length_m", Decimal("0.001")),
+    "inch": ("length_m", Decimal("0.0254")), "inches": ("length_m", Decimal("0.0254")),
+    "ft": ("length_m", Decimal("0.3048")),
+    "foot": ("length_m", Decimal("0.3048")),
+    "feet": ("length_m", Decimal("0.3048")),
+    "yd": ("length_m", Decimal("0.9144")),
+    "yard": ("length_m", Decimal("0.9144")),
+    "yards": ("length_m", Decimal("0.9144")),
+    "kg": ("mass_kg", Decimal("1")),
+    "kilogram": ("mass_kg", Decimal("1")),
+    "kilograms": ("mass_kg", Decimal("1")),
+    "g": ("mass_kg", Decimal("0.001")),
+    "gram": ("mass_kg", Decimal("0.001")),
+    "grams": ("mass_kg", Decimal("0.001")),
+    "mg": ("mass_kg", Decimal("0.000001")),
+    "milligram": ("mass_kg", Decimal("0.000001")),
+    "milligrams": ("mass_kg", Decimal("0.000001")),
+    "lb": ("mass_kg", Decimal("0.45359237")),
+    "lbs": ("mass_kg", Decimal("0.45359237")),
+    "pound": ("mass_kg", Decimal("0.45359237")),
+    "pounds": ("mass_kg", Decimal("0.45359237")),
+    "oz": ("mass_kg", Decimal("0.028349523125")),
+    "ounce": ("mass_kg", Decimal("0.028349523125")),
+    "ounces": ("mass_kg", Decimal("0.028349523125")),
+    "second": ("time_s", Decimal("1")),
+    "seconds": ("time_s", Decimal("1")),
+    "sec": ("time_s", Decimal("1")),
+    "secs": ("time_s", Decimal("1")),
+    "minute": ("time_s", Decimal("60")),
+    "minutes": ("time_s", Decimal("60")),
+    "min": ("time_s", Decimal("60")),
+    "mins": ("time_s", Decimal("60")),
+    "hour": ("time_s", Decimal("3600")),
+    "hours": ("time_s", Decimal("3600")),
+    "hr": ("time_s", Decimal("3600")),
+    "hrs": ("time_s", Decimal("3600")),
+    "day": ("time_s", Decimal("86400")), "days": ("time_s", Decimal("86400")),
+    "week": ("time_s", Decimal("604800")), "weeks": ("time_s", Decimal("604800")),
+    "liter": ("volume_l", Decimal("1")),
+    "liters": ("volume_l", Decimal("1")),
+    "litre": ("volume_l", Decimal("1")),
+    "litres": ("volume_l", Decimal("1")),
+    "ml": ("volume_l", Decimal("0.001")),
+}
+
+
+def is_time_sensitive_query(text: str) -> bool:
+    """Return True for relative-time wording whose answer can change quickly."""
+    tokens = set(normalize_text(text).split())
+    normalized = normalize_text(text)
+    relative_phrases = ("this week", "this month", "this year", "right now")
+    return bool(tokens & TIME_SENSITIVE_TOKENS) or any(
+        phrase in normalized for phrase in relative_phrases
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +447,115 @@ def _has_prefix_flip(tokens1: list[str], tokens2: list[str]) -> bool:
     return False
 
 
+def _has_antonym_flip(tokens1: list[str], tokens2: list[str]) -> bool:
+    set1, set2 = set(tokens1), set(tokens2)
+    return any(
+        (a in set1 and b in set2) or (b in set1 and a in set2)
+        for a, b in ANTONYM_PAIRS
+    )
+
+
+def _directional_markers(tokens: list[str]) -> list[str]:
+    markers: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if tokens[i] == "out" and i + 1 < len(tokens) and tokens[i + 1] == "of":
+            markers.append("out_of")
+            i += 2
+            continue
+        if tokens[i] in {
+            "from", "to", "into", "onto", "through", "before", "after",
+            "above", "below", "over", "under", "between", "versus", "vs",
+        }:
+            markers.append(tokens[i])
+        i += 1
+    return markers
+
+
+def _number_value(token: str) -> Decimal | None:
+    if token in NUMBER_WORDS:
+        return Decimal(NUMBER_WORDS[token])
+    try:
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            return Decimal(token)
+    except InvalidOperation:
+        return None
+    return None
+
+
+def _semantic_numeric_facts(tokens: list[str]) -> list[tuple[str, str, str]]:
+    """Extract ordered numeric/unit facts, canonicalizing simple equivalent units.
+
+    For explicit conversion questions, only quantities before the first target
+    boundary ("to"/"into") are converted. Target units and target numbers remain
+    distinct so converting 1 hour to minutes cannot collide with converting it to seconds.
+    """
+    converter_intent = any(t in {"convert", "conversion", "translate"} for t in tokens)
+    target_boundary = None
+    if converter_intent:
+        for idx, token in enumerate(tokens):
+            if token in {"to", "into"}:
+                target_boundary = idx
+                break
+
+    facts: list[tuple[str, str, str]] = []
+    skip: set[int] = set()
+    for i, token in enumerate(tokens):
+        if i in skip:
+            continue
+        num = _number_value(token)
+        if num is not None:
+            unit_idx = i + 1
+            can_convert = unit_idx < len(tokens) and tokens[unit_idx] in UNIT_FACTORS
+            if target_boundary is not None and i >= target_boundary:
+                can_convert = False
+            if can_convert:
+                unit = tokens[unit_idx]
+                dimension, factor = UNIT_FACTORS[unit]
+                canonical = (num * factor).normalize()
+                facts.append(("quantity", dimension, format(canonical, "f")))
+                skip.add(unit_idx)
+            else:
+                facts.append(("number", "scalar", format(num.normalize(), "f")))
+        elif token in CANONICAL_UNITS:
+            facts.append(("unit", "unit", CANONICAL_UNITS[token]))
+    return facts
+
+
+def _content_tokens_with_unit_dimensions(tokens: list[str]) -> list[str]:
+    """Normalize already-validated number/unit pairs for word-overlap checks."""
+    result: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if (
+            _number_value(tokens[i]) is not None
+            and i + 1 < len(tokens)
+            and tokens[i + 1] in UNIT_FACTORS
+        ):
+            dimension = UNIT_FACTORS[tokens[i + 1]][0]
+            result.extend((f"quantity_{dimension}", f"unit_{dimension}"))
+            i += 2
+            continue
+        result.append(UNIT_FACTORS[tokens[i]][0] if tokens[i] in UNIT_FACTORS else tokens[i])
+        i += 1
+    return result
+
+
+def _canonicalize_synonyms(
+    tokens: list[str], synonym_groups: Iterable[Iterable[str]] | None
+) -> list[str]:
+    if not synonym_groups:
+        return tokens
+    mapping: dict[str, str] = {}
+    for group in synonym_groups:
+        words = sorted({str(word).lower().strip() for word in group if str(word).strip()})
+        if len(words) >= 2:
+            canonical = words[0]
+            for word in words:
+                mapping[word] = canonical
+    return [mapping.get(token, token) for token in tokens]
+
+
 # ---------------------------------------------------------------------------
 # Public Guard Check
 # ---------------------------------------------------------------------------
@@ -360,6 +565,7 @@ def check_match(
     cached_query: str,
     stopwords: set[str] | None = None,
     paraphrase_safe_words: set[str] | None = None,
+    synonym_groups: Iterable[Iterable[str]] | None = None,
 ) -> GuardResult:
     """Evaluate whether new_query safely matches cached_query.
 
@@ -372,6 +578,9 @@ def check_match(
       content words appear in a different order.
     """
     stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
+    # Relative-time requests are deliberately not treated as reusable semantic hits.
+    if is_time_sensitive_query(new_query) or is_time_sensitive_query(cached_query):
+        return GuardResult(GuardVerdict.REJECT, "Relative-time query is time-sensitive")
     safe_words = (
         paraphrase_safe_words
         if paraphrase_safe_words is not None
@@ -393,29 +602,48 @@ def check_match(
     tokens_new = norm_new.split()
     tokens_cached = norm_cached.split()
 
-    # Rule (a): REJECT if numbers differ
-    nums_new = _extract_numbers(tokens_new)
-    nums_cached = _extract_numbers(tokens_cached)
-    if nums_new != nums_cached:
+    # Do not ignore a change in explicit question intent just because wh-words
+    # are also stopwords for content overlap. Missing question framing is okay:
+    # "Capital city of France?" may match "What is the capital of France?".
+    question_new = next((t for t in tokens_new if t in QUESTION_INTENT_WORDS), None)
+    question_cached = next((t for t in tokens_cached if t in QUESTION_INTENT_WORDS), None)
+    if (
+        question_new is not None
+        and question_cached is not None
+        and question_new != question_cached
+    ):
         return GuardResult(
             GuardVerdict.REJECT,
-            f"Numbers differ: {nums_new} vs {nums_cached}",
+            f"Question intent differs: {question_new!r} vs {question_cached!r}",
         )
 
-    # Rule (b): REJECT if sequence of numbers and units differs in order
-    units_seq_new = _extract_numbers_and_units(tokens_new)
-    units_seq_cached = _extract_numbers_and_units(tokens_cached)
-    if units_seq_new != units_seq_cached:
-        # Check if the same elements exist in a different order
-        if sorted(units_seq_new) == sorted(units_seq_cached) and units_seq_new != units_seq_cached:
-            return GuardResult(
-                GuardVerdict.REJECT,
-                f"Numbers and units inverted: {units_seq_new} vs {units_seq_cached}",
-            )
-        # Or different units entirely
+    # Ordered number/unit facts catch swapped values and permit only explicit,
+    # exact linear conversions such as 1 hour == 60 minutes.
+    facts_new = _semantic_numeric_facts(tokens_new)
+    facts_cached = _semantic_numeric_facts(tokens_cached)
+    if facts_new != facts_cached:
         return GuardResult(
             GuardVerdict.REJECT,
-            f"Units/numbers sequence mismatch: {units_seq_new} vs {units_seq_cached}",
+            f"Ordered number/unit facts differ: {facts_new} vs {facts_cached}",
+        )
+
+    # Directional markers must keep their order (e.g. from A to B != to B from A).
+    directions_new = _directional_markers(tokens_new)
+    directions_cached = _directional_markers(tokens_cached)
+    if directions_new != directions_cached:
+        # A missing marker on one side can be an extra instruction (for example,
+        # "summarize this article" vs "summarize this article and translate it
+        # to French"). Keep that case in VERIFY so content-difference handling
+        # can decide conservatively. Reject only when both queries explicitly
+        # specify directional relations and those relations disagree.
+        if directions_new and directions_cached:
+            return GuardResult(
+                GuardVerdict.REJECT,
+                f"Directional relation order differs: {directions_new} vs {directions_cached}",
+            )
+        return GuardResult(
+            GuardVerdict.VERIFY,
+            f"Directional markers differ: {directions_new} vs {directions_cached}",
         )
 
     # Rule (c): REJECT if negation or scope words differ or prefix flips exist
@@ -427,16 +655,25 @@ def check_match(
             f"Negation or scope words differ: {neg_new} vs {neg_cached}",
         )
 
-    if _has_prefix_flip(tokens_new, tokens_cached):
+    if _has_prefix_flip(tokens_new, tokens_cached) or _has_antonym_flip(
+        tokens_new, tokens_cached
+    ):
         return GuardResult(
             GuardVerdict.REJECT,
-            "Negation or antonym prefix flip detected",
+            "Negation or lexical antonym flip detected",
         )
 
     # Content word analysis for Rules (d) and (e)
     # Remove stopwords and punctuation remnants
-    content_new = {t for t in tokens_new if t not in stopwords}
-    content_cached = {t for t in tokens_cached if t not in stopwords}
+    # When a number/unit pair was already validated as an equivalent quantity,
+    # compare its unit by dimension (hour/minute both time) rather than spelling.
+    # Standalone/target units remain distinguished by the ordered facts check above.
+    content_tokens_new = _content_tokens_with_unit_dimensions(tokens_new)
+    content_tokens_cached = _content_tokens_with_unit_dimensions(tokens_cached)
+    canonical_new = _canonicalize_synonyms(content_tokens_new, synonym_groups)
+    canonical_cached = _canonicalize_synonyms(content_tokens_cached, synonym_groups)
+    content_new = {t for t in canonical_new if t not in stopwords}
+    content_cached = {t for t in canonical_cached if t not in stopwords}
 
     unmatched_new = (content_new - content_cached) - safe_words
     unmatched_cached = (content_cached - content_new) - safe_words
@@ -457,8 +694,8 @@ def check_match(
         )
 
     # Rule (d''): content words in a different order → VERIFY
-    ordered_new = [t for t in tokens_new if t not in stopwords and t not in safe_words]
-    ordered_cached = [t for t in tokens_cached if t not in stopwords and t not in safe_words]
+    ordered_new = [t for t in canonical_new if t not in stopwords and t not in safe_words]
+    ordered_cached = [t for t in canonical_cached if t not in stopwords and t not in safe_words]
     if ordered_new != ordered_cached:
         return GuardResult(GuardVerdict.VERIFY, "Content words appear in different order")
 
