@@ -27,6 +27,7 @@ from semantic_cache.embedders import (
 )
 from semantic_cache.store import SQLiteStore
 from semantic_cache.cache import SemanticCache, Stats, CacheResult
+from semantic_cache.context import CacheContext
 
 
 # ===========================================================================
@@ -176,6 +177,37 @@ class TestValidateEmbedding:
         out[0] = 99.0  # should not raise
 
 
+class TestCacheContext:
+
+    def test_same_context_has_stable_opaque_namespace(self):
+        context = CacheContext(
+            tenant="tenant-42",
+            model="gpt-example",
+            system_prompt_version="2026-10-24",
+            user_scope="user-9",
+            temperature=0.2,
+            tools_version="v3",
+            retrieval_version="docs-17",
+            locale="en-IN",
+        )
+
+        namespace = context.namespace()
+
+        assert namespace == context.namespace()
+        assert namespace.startswith("llm:")
+        assert "tenant-42" not in namespace
+        assert "user-9" not in namespace
+
+    def test_response_affecting_context_fields_partition_namespaces(self):
+        base = dict(tenant="a", model="m", system_prompt_version="v1")
+        assert CacheContext(**base).namespace() != CacheContext(
+            **(base | {"system_prompt_version": "v2"})
+        ).namespace()
+        assert CacheContext(**base).namespace() != CacheContext(
+            **(base | {"retrieval_version": "corpus-v2"})
+        ).namespace()
+
+
 # ===========================================================================
 # 2. SQLiteStore tests
 # ===========================================================================
@@ -195,6 +227,12 @@ class TestSQLiteStore:
         assert entry is not None
         assert abs(entry.score - 1.0) < 1e-5
         assert entry.response == "world"
+
+    def test_invalid_capacity_configuration_raises(self):
+        with pytest.raises(ValueError, match="embedding_dim"):
+            SQLiteStore(embedding_dim=0)
+        with pytest.raises(ValueError, match="max_entries"):
+            SQLiteStore(max_entries=0)
 
     def test_search_empty_namespace_returns_none(self):
         store = make_store()

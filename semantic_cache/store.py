@@ -114,6 +114,10 @@ class SQLiteStore:
         embedding_dim: int | None = None,
         max_entries: int | None = None,
     ) -> None:
+        if embedding_dim is not None and embedding_dim < 1:
+            raise ValueError("embedding_dim must be a positive integer or None")
+        if max_entries is not None and (not isinstance(max_entries, int) or max_entries < 1):
+            raise ValueError("max_entries must be a positive integer or None")
         self._path = path
         self._embedding_dim = embedding_dim
         self._max_entries = max_entries

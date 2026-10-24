@@ -17,6 +17,7 @@ New in v0.2.0:
     embedders.is_zero_vector()
 """
 from .cache import CacheResult, SemanticCache, Stats
+from .context import CacheContext
 from .embedders import (
     Embedder,
     HashingEmbedder,
@@ -25,6 +26,7 @@ from .embedders import (
     validate_embedding,
 )
 from .store import SQLiteStore
+from .protocols import CacheStore
 
 __version__ = "0.2.0"
 
@@ -33,8 +35,10 @@ __all__ = [
     "SemanticCache",
     "CacheResult",
     "Stats",
+    "CacheContext",
     # Store
     "SQLiteStore",
+    "CacheStore",
     # Embedders
     "Embedder",
     "HashingEmbedder",

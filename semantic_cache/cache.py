@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from .embedders import Embedder, HashingEmbedder, is_zero_vector
+from .protocols import CacheStore
 from .store import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -161,7 +162,7 @@ class SemanticCache:
     def __init__(
         self,
         embedder: Embedder | None = None,
-        store: SQLiteStore | None = None,
+        store: CacheStore | None = None,
         threshold: float = 0.85,
         ttl: float | None = None,
         namespace: str = "default",
@@ -172,7 +173,7 @@ class SemanticCache:
         on_error: ErrorCallback | None = None,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
-        self.store: SQLiteStore = store or SQLiteStore()
+        self.store: CacheStore = store or SQLiteStore()
         self.threshold: float = _validate_threshold(threshold)
         self.ttl = ttl
         self.namespace: str = _validate_namespace(namespace)
@@ -184,8 +185,7 @@ class SemanticCache:
         self.stats = Stats()
 
         # Single-flight: query -> (lock, result/exception)
-        self._inflight: dict[str, threading.Event] = {}
-        self._inflight_results: dict[str, CacheResult | BaseException] = {}
+        self._inflight: dict[str, list[Any]] = {}
         self._inflight_lock = threading.Lock()
 
     # ------------------------------------------------------------------
