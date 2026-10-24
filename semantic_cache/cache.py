@@ -292,52 +292,67 @@ class SemanticCache:
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
         self._embedder_name: str = _detect_embedder_name(self.embedder)
-        self.store: CacheStore = store or SQLiteStore()
-        if threshold is None:
-            threshold = float(getattr(self.embedder, "default_threshold", 0.85))
-        self.threshold: float = _validate_threshold(threshold)
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
-            raise ValueError("top_k must be a positive integer")
-        if top_k > 500:
-            raise ValueError("top_k must not exceed 500")
-        self.top_k = top_k
-        normalized_groups: list[frozenset[str]] = []
-        for group in synonym_groups or ():
-            words = frozenset(str(word).strip().lower() for word in group if str(word).strip())
-            if len(words) >= 2:
-                normalized_groups.append(words)
-        self.synonym_groups = tuple(normalized_groups)
-        self.ttl = ttl
-        self.namespace: str = _validate_namespace(namespace)
-        self.enabled: bool = enabled
-        self._log_queries: bool = log_queries
-        self._on_hit = on_hit
-        self._on_miss = on_miss
-        self._on_error = on_error
-        self.guard: bool = guard
-        self.guard_buffer: float = guard_buffer
-        self.verifier: VerifierCallback | None = verifier
-        self.verify_always: bool = verify_always
-        self.shadow_rate: float = max(0.0, min(1.0, float(shadow_rate)))
-        self.shadow_max_concurrency: int = max(1, int(shadow_max_concurrency))
-        self.shadow_comparator: ShadowComparator | None = shadow_comparator
-        self.exact_match: bool = exact_match
-        self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
-        self.stats = Stats()
-        self._stats_lock = threading.Lock()
+        _created_store = False
+        if store is None:
+            self.store = SQLiteStore()
+            _created_store = True
+        else:
+            self.store = store
+        self._owns_store = _created_store
 
-        # Shadow mode: bounded thread pool (daemon threads, never block shutdown)
-        self._shadow_pool: ThreadPoolExecutor | None = None
-        self._shadow_futures: list[Any] = []
-        self._shadow_futures_lock = threading.Lock()
-        if self.shadow_rate > 0.0:
-            self._shadow_pool = ThreadPoolExecutor(
-                max_workers=self.shadow_max_concurrency,
-                thread_name_prefix="semantic-cache-shadow",
-            )
+        try:
+            if threshold is None:
+                threshold = float(getattr(self.embedder, "default_threshold", 0.85))
+            self.threshold: float = _validate_threshold(threshold)
+            if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+                raise ValueError("top_k must be a positive integer")
+            if top_k > 500:
+                raise ValueError("top_k must not exceed 500")
+            self.top_k = top_k
+            normalized_groups: list[frozenset[str]] = []
+            for group in synonym_groups or ():
+                words = frozenset(str(word).strip().lower() for word in group if str(word).strip())
+                if len(words) >= 2:
+                    normalized_groups.append(words)
+            self.synonym_groups = tuple(normalized_groups)
+            self.ttl = ttl
+            self.namespace: str = _validate_namespace(namespace)
+            self.enabled: bool = enabled
+            self._log_queries: bool = log_queries
+            self._on_hit = on_hit
+            self._on_miss = on_miss
+            self._on_error = on_error
+            self.guard: bool = guard
+            self.guard_buffer: float = guard_buffer
+            self.verifier: VerifierCallback | None = verifier
+            self.verify_always: bool = verify_always
+            self.shadow_rate: float = max(0.0, min(1.0, float(shadow_rate)))
+            self.shadow_max_concurrency: int = max(1, int(shadow_max_concurrency))
+            self.shadow_comparator: ShadowComparator | None = shadow_comparator
+            self.exact_match: bool = exact_match
+            self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
+            self.stats = Stats()
+            self._stats_lock = threading.Lock()
 
-        # Single-flight: query -> (lock, result/exception)
-        self._inflight: dict[str, list[Any]] = {}
+            # Shadow mode: bounded thread pool (daemon threads, never block shutdown)
+            self._shadow_pool: ThreadPoolExecutor | None = None
+            self._shadow_futures: list[Any] = []
+            self._shadow_futures_lock = threading.Lock()
+            if self.shadow_rate > 0.0:
+                self._shadow_pool = ThreadPoolExecutor(
+                    max_workers=self.shadow_max_concurrency,
+                    thread_name_prefix="semantic-cache-shadow",
+                )
+
+            # Single-flight: query -> (lock, result/exception)
+            self._inflight: dict[str, list[Any]] = {}
+        except BaseException:
+            if _created_store and hasattr(self.store, "close"):
+                try:
+                    self.store.close()
+                except Exception:
+                    pass
+            raise
         self._inflight_lock = threading.Lock()
         # Async single-flight is scoped to an event loop.  A cache instance is
         # normally shared by one ASGI application's loop.
@@ -429,13 +444,27 @@ class SemanticCache:
         with self._shadow_futures_lock:
             self._shadow_futures = [f for f in self._shadow_futures if not f.done()]
 
-    def close(self) -> None:
+    def close(self, close_store: bool | None = None) -> None:
         """Release cache resources including background shadow thread pool."""
         if self._shadow_pool is not None:
             self._shadow_pool.shutdown(wait=False)
             self._shadow_pool = None
-        if hasattr(self.store, "close"):
+        if close_store is None:
+            close_store = getattr(self, "_owns_store", True)
+        if close_store and hasattr(self, "store") and hasattr(self.store, "close"):
             self.store.close()
+
+    def __enter__(self) -> SemanticCache:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Core API

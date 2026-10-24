@@ -571,9 +571,11 @@ class TestCacheIntegration:
         assert hit_a is not None
         assert hit_a.response == "Alpha answer"
 
-        # cache_b uses different embedder name -> must not exact-hit
         hit_b = cache_b.get("Cross-model query")
         assert hit_b is None
+        cache_a.close()
+        cache_b.close()
+        store.close()
 
     def test_exact_match_preserves_symbols_and_does_not_cross_hit(self) -> None:
         """Exact-match tier must preserve symbols and never cross-hit on symbol differences."""

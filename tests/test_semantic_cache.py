@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import pathlib
+import sqlite3
 
 # We import via the package so the relative imports work correctly
 import sys
@@ -1225,3 +1226,54 @@ class TestNamespaceStats:
         ns_stats = cache.namespace_stats()
         assert ns_stats["namespace"] == "my-ns"
         assert ns_stats["entries"] == 1
+
+
+# ===========================================================================
+# 12. Resource lifecycle regression tests
+# ===========================================================================
+
+class TestResourceLifecycle:
+
+    def test_semantic_cache_init_failure_cleans_up_internal_store(self, monkeypatch):
+        """When SemanticCache init fails, the internally created SQLiteStore is closed."""
+        closed = []
+        real_close = SQLiteStore.close
+
+        def track_close(store_self):
+            closed.append(store_self)
+            return real_close(store_self)
+
+        monkeypatch.setattr(SQLiteStore, "close", track_close)
+
+        with pytest.raises(ValueError, match="threshold"):
+            SemanticCache(threshold=1.5)
+
+        assert len(closed) >= 1
+
+    def test_semantic_cache_context_manager(self):
+        """SemanticCache functions as a context manager and releases resources on exit."""
+        with SemanticCache() as cache:
+            cache.set("hello", "world")
+            assert cache.get("hello") is not None
+            store_db = cache.store.db
+
+        # Context exit closes the store
+        with pytest.raises(sqlite3.ProgrammingError, match="Cannot operate on a closed database"):
+            store_db.execute("SELECT 1")
+
+    def test_shared_store_not_closed_by_external_cache_close(self):
+        """Closing a cache that was given a shared store does not close the shared store by default."""
+        store = SQLiteStore(path=":memory:", embedding_dim=DIM)
+        emb = HashingEmbedder(dim=DIM)
+        cache1 = SemanticCache(embedder=emb, store=store)
+        cache2 = SemanticCache(embedder=emb, store=store)
+
+        cache1.close()
+        # store is still usable by cache2
+        cache2.set("ping", "pong")
+        assert cache2.get("ping") is not None
+
+        # Clean up
+        cache2.close()
+        store.close()
+

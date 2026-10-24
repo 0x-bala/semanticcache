@@ -58,6 +58,7 @@ def test_top_k_tries_second_candidate_after_top_one_is_rejected():
     assert result.matched_query == equivalent
     assert cache.stats.guard_rejects >= 1
     cache.close()
+    store.close()
 
 
 @pytest.mark.parametrize(
@@ -122,6 +123,7 @@ def test_relative_time_queries_are_not_cached_or_reused():
     assert second.response == "price B"
     assert store.size() == 0
     cache.close()
+    store.close()
 
 
 def test_default_thresholds_are_embedder_specific_without_model_download():

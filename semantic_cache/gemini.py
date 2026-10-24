@@ -57,12 +57,18 @@ class GeminiClient:
                 with urlopen(request, timeout=self.timeout) as response:
                     return json.load(response)
             except HTTPError as exc:
+                exc.close()
                 last_exc = exc
                 if exc.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
                     time.sleep(1.0 * (2**attempt))
                     continue
                 raise GeminiAPIError(f"Gemini request failed: {exc}") from exc
             except (URLError, TimeoutError) as exc:
+                if hasattr(exc, "close"):
+                    try:
+                        exc.close()
+                    except Exception:
+                        pass
                 last_exc = exc
                 if attempt < max_retries - 1:
                     time.sleep(1.0 * (2**attempt))

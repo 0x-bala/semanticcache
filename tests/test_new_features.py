@@ -422,6 +422,23 @@ class TestGeminiVerifier:
                 # Must return safe_default immediately without sleeping 45s
                 assert result is False
                 assert mock_sleep.call_count == 0
+        assert mock_http_error.fp.closed is True
+
+    def test_gemini_client_closes_http_error_response(self):
+        """When GeminiClient encounters HTTPError, the response is explicitly closed."""
+        import io
+        from urllib.error import HTTPError
+        from semantic_cache.gemini import GeminiClient, GeminiAPIError
+
+        client = GeminiClient(api_key="fake-key")
+        mock_err = HTTPError("url", 403, "Forbidden", {}, io.BytesIO(b"error"))
+
+        with patch("semantic_cache.gemini.urlopen", side_effect=mock_err):
+            with pytest.raises(GeminiAPIError):
+                client._request("dummy", {}, max_retries=1)
+
+        assert mock_err.fp.closed is True
+
 
     def test_verifier_bounded_lru_cache(self):
         """Verifier verdict cache is bounded by max_cache_size with LRU eviction."""
@@ -657,6 +674,7 @@ class TestMaxEntriesLRU:
         vec = embedder.embed("query 10")
         store.add("test", "query 10", vec, "response 10", None)
         assert store.size("test") == 9
+        store.close()
 
     def test_inplace_index_compaction_after_eviction(self):
         """VectorIndex is compacted in-place without clearing or re-querying SQLite."""
@@ -680,6 +698,7 @@ class TestMaxEntriesLRU:
         assert vindex.active_matrix().shape[0] == 4
         # Index was compacted in-place, NOT wiped
         assert "test" in store._index
+        store.close()
 
     def test_lru_evicts_least_recently_used(self):
         """The entry with the oldest last_hit_at is evicted."""
@@ -703,6 +722,7 @@ class TestMaxEntriesLRU:
         remaining = store.db.execute("SELECT query FROM entries ORDER BY id").fetchall()
         remaining_queries = [r[0] for r in remaining]
         assert "query 2" not in remaining_queries
+        store.close()
 
     def test_max_entries_invalid(self):
         """max_entries < 1 raises ValueError."""
@@ -728,6 +748,8 @@ class TestMaxEntriesLRU:
         retrieved = cache.get("brand new item")
         assert retrieved is not None
         assert retrieved.response == "brand new answer"
+        cache.close()
+        store.close()
 
     def test_chunked_delete_over_500_ids(self):
         """Test that evicting over 500 entries executes deletions in chunks of 500."""
@@ -758,6 +780,7 @@ class TestMaxEntriesLRU:
             store.db.commit()
             store._evict_lru_if_needed()
         assert store.size("default") <= 50
+        store.close()
 
 
 

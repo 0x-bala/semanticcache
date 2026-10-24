@@ -212,37 +212,50 @@ class SQLiteStore:
         # A generous busy timeout lets concurrent processes queue for write locks
         # (for example two app instances starting against the same cache file).
         self.db = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
-        self._enable_wal()
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self.db.execute(
-            """CREATE TABLE IF NOT EXISTS entries (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                namespace   TEXT    NOT NULL,
-                query       TEXT    NOT NULL,
-                embedding   BLOB    NOT NULL,
-                response    TEXT    NOT NULL,
-                created_at  REAL    NOT NULL,
-                expires_at  REAL,
-                hits        INTEGER NOT NULL DEFAULT 0,
-                last_hit_at REAL,
-                query_hash  TEXT,
-                embedder    TEXT    NOT NULL DEFAULT ''
-            )"""
-        )
+        try:
+            self._enable_wal()
+            self.db.execute("PRAGMA foreign_keys=ON")
+            self.db.execute(
+                """CREATE TABLE IF NOT EXISTS entries (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    namespace   TEXT    NOT NULL,
+                    query       TEXT    NOT NULL,
+                    embedding   BLOB    NOT NULL,
+                    response    TEXT    NOT NULL,
+                    created_at  REAL    NOT NULL,
+                    expires_at  REAL,
+                    hits        INTEGER NOT NULL DEFAULT 0,
+                    last_hit_at REAL,
+                    query_hash  TEXT,
+                    embedder    TEXT    NOT NULL DEFAULT ''
+                )"""
+            )
 
-        # Concurrency-safe migration: use user_version as a migration lock.
-        # 0 = not migrated, 1 = migration in progress, 2 = migration complete.
-        self._run_safe_migration()
+            # Concurrency-safe migration: use user_version as a migration lock.
+            # 0 = not migrated, 1 = migration in progress, 2 = migration complete.
+            self._run_safe_migration()
 
-        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)")
-        self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)")
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_entries_exact "
-            "ON entries(namespace, query_hash, embedder)"
-        )
-        self.db.commit()
+            self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)"
+            )
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entries_exact "
+                "ON entries(namespace, query_hash, embedder)"
+            )
+            self.db.commit()
+        except BaseException:
+            try:
+                self.db.close()
+            except Exception:
+                pass
+            raise
 
         # index_key -> VectorIndex
         self._index: dict[str, VectorIndex] = {}
@@ -303,6 +316,10 @@ class SQLiteStore:
                         return
                     continue
                 raise
+        else:
+            raise sqlite3.OperationalError(
+                f"Could not acquire migration lock after {max_attempts} attempts"
+            )
 
         try:
             # Re-check user_version inside the immediate transaction
@@ -333,7 +350,7 @@ class SQLiteStore:
             # Mark migration complete and commit
             self.db.execute("PRAGMA user_version = 2")
             self.db.execute("COMMIT")
-        except Exception:
+        except BaseException:
             try:
                 self.db.execute("ROLLBACK")
             except Exception:
@@ -719,4 +736,17 @@ class SQLiteStore:
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
-            self.db.close()
+            if hasattr(self, "db") and self.db is not None:
+                self.db.close()
+
+    def __enter__(self) -> SQLiteStore:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

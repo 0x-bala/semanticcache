@@ -174,34 +174,42 @@ class GeminiVerifier:
                 self.last_error = None
                 return text.startswith("yes")
             except HTTPError as exc:
-                last_exc = exc
-                self.last_error = exc
-                if exc.code in (429, 500, 502, 503, 504) and attempt < self.max_retries - 1:
-                    sleep_s = 2.0 * (2**attempt)
-                    if exc.code == 429:
-                        requested_delay = sleep_s
-                        try:
-                            raw_body = exc.read().decode("utf-8")
-                            err_body = json.loads(raw_body)
-                            for detail in err_body.get("error", {}).get("details", []):
-                                if "retryDelay" in detail:
-                                    raw_delay = detail["retryDelay"].rstrip("s")
-                                    requested_delay = max(requested_delay, float(raw_delay) + 1.0)
-                        except Exception:
-                            requested_delay = max(requested_delay, 5.0)
-                        if requested_delay > 8.0:
-                            logger.warning(
-                                "GeminiVerifier 429 retry delay (%.1fs) exceeds 8s cap; "
-                                "returning safe_default",
-                                requested_delay,
-                            )
-                            return self.safe_default
-                        sleep_s = min(requested_delay, 8.0)
-                    time.sleep(sleep_s)
-                    continue
-                logger.warning("GeminiVerifier HTTP error: %s", exc)
-                return self.safe_default
+                try:
+                    last_exc = exc
+                    self.last_error = exc
+                    if exc.code in (429, 500, 502, 503, 504) and attempt < self.max_retries - 1:
+                        sleep_s = 2.0 * (2**attempt)
+                        if exc.code == 429:
+                            requested_delay = sleep_s
+                            try:
+                                raw_body = exc.read().decode("utf-8")
+                                err_body = json.loads(raw_body)
+                                for detail in err_body.get("error", {}).get("details", []):
+                                    if "retryDelay" in detail:
+                                        raw_delay = detail["retryDelay"].rstrip("s")
+                                        requested_delay = max(requested_delay, float(raw_delay) + 1.0)
+                            except Exception:
+                                requested_delay = max(requested_delay, 5.0)
+                            if requested_delay > 8.0:
+                                logger.warning(
+                                    "GeminiVerifier 429 retry delay (%.1fs) exceeds 8s cap; "
+                                    "returning safe_default",
+                                    requested_delay,
+                                )
+                                return self.safe_default
+                            sleep_s = min(requested_delay, 8.0)
+                        time.sleep(sleep_s)
+                        continue
+                    logger.warning("GeminiVerifier HTTP error: %s", exc)
+                    return self.safe_default
+                finally:
+                    exc.close()
             except (URLError, TimeoutError, OSError) as exc:
+                if hasattr(exc, "close"):
+                    try:
+                        exc.close()
+                    except Exception:
+                        pass
                 last_exc = exc
                 self.last_error = exc
                 if attempt < self.max_retries - 1:
