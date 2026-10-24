@@ -9,6 +9,7 @@ No network access or live AI APIs are required.
 """
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from typing import Optional
@@ -855,6 +856,64 @@ class TestCachedDecorator:
         assert store.db.execute(
             "SELECT response, hits FROM entries WHERE namespace=? AND query=?", ("default", "q")
         ).fetchone() == ("cached", 0)
+
+
+class TestAsyncCache:
+
+    def test_async_get_or_compute_stores_then_hits(self):
+        cache = make_cache()
+        calls = []
+
+        async def compute(_: str) -> str:
+            calls.append(1)
+            return "answer"
+
+        async def scenario():
+            first = await cache.async_get_or_compute("q", compute)
+            second = await cache.async_get_or_compute("q", compute)
+            return first, second
+
+        first, second = asyncio.run(scenario())
+        assert first.hit is False
+        assert second.hit is True
+        assert calls == [1]
+
+    def test_async_bypass_is_fresh_and_uncached(self):
+        cache = make_cache()
+        calls = []
+
+        async def compute(_: str) -> str:
+            calls.append(1)
+            return f"answer-{len(calls)}"
+
+        async def scenario():
+            return await asyncio.gather(
+                cache.async_get_or_compute("q", compute, bypass=True),
+                cache.async_get_or_compute("q", compute, bypass=True),
+            )
+
+        first, second = asyncio.run(scenario())
+        assert (first.response, second.response) == ("answer-1", "answer-2")
+        assert cache.store.size() == 0
+
+    def test_async_single_flight_coalesces_normal_requests(self):
+        cache = make_cache()
+        calls = []
+
+        async def compute(_: str) -> str:
+            calls.append(1)
+            await asyncio.sleep(0.02)
+            return "answer"
+
+        async def scenario():
+            return await asyncio.gather(
+                cache.async_get_or_compute("q", compute),
+                cache.async_get_or_compute("q", compute),
+            )
+
+        results = asyncio.run(scenario())
+        assert [result.response for result in results] == ["answer", "answer"]
+        assert calls == [1]
 
 
 # ===========================================================================

@@ -23,11 +23,13 @@ Security notes
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from .embedders import Embedder, HashingEmbedder, is_zero_vector
 from .protocols import CacheStore
@@ -119,6 +121,7 @@ class CacheResult:
 HitCallback = Callable[[CacheResult], None]
 MissCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
+AsyncCompute = Callable[[str], Awaitable[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +190,9 @@ class SemanticCache:
         # Single-flight: query -> (lock, result/exception)
         self._inflight: dict[str, list[Any]] = {}
         self._inflight_lock = threading.Lock()
+        # Async single-flight is scoped to an event loop.  A cache instance is
+        # normally shared by one ASGI application's loop.
+        self._async_inflight: dict[str, asyncio.Future[CacheResult]] = {}
 
     # ------------------------------------------------------------------
     # Core API
@@ -459,6 +465,91 @@ class SemanticCache:
                 return self.get_or_compute(
                     prompt, fn, namespace, bypass=bypass
                 ).response
+
+            return inner
+
+        return wrap
+
+    async def async_get_or_compute(
+        self,
+        query: str,
+        compute: AsyncCompute,
+        namespace: str | None = None,
+        bypass: bool = False,
+    ) -> CacheResult:
+        """Async equivalent of :meth:`get_or_compute`.
+
+        ``compute`` must return an awaitable string.  Ordinary calls use
+        single-flight coalescing within the current event loop; bypass and
+        disabled-cache calls always compute independently and never touch the
+        embedder or store.
+        """
+        ns = _validate_namespace(namespace or self.namespace)
+
+        async def compute_fresh() -> str:
+            try:
+                response = compute(query)
+                if not inspect.isawaitable(response):
+                    raise TypeError("async compute function must return an awaitable")
+                response = await response
+                if not isinstance(response, str) or not response:
+                    raise ValueError(
+                        "compute function must return a non-empty string; "
+                        f"got {type(response).__name__!r}"
+                    )
+                return response
+            except Exception as exc:
+                self.stats.errors += 1
+                if self._on_error:
+                    try:
+                        self._on_error(query, exc)
+                    except Exception:
+                        pass
+                raise
+
+        if bypass or not self.enabled:
+            return CacheResult(response=await compute_fresh(), hit=False)
+
+        cached = await asyncio.to_thread(self.get, query, ns)
+        if cached:
+            return cached
+
+        key = f"{ns}:{query}"
+        future = self._async_inflight.get(key)
+        if future is not None:
+            outcome = await asyncio.shield(future)
+            return CacheResult(response=outcome.response, hit=False)
+
+        future = asyncio.get_running_loop().create_future()
+        self._async_inflight[key] = future
+        try:
+            start = time.perf_counter()
+            response = await compute_fresh()
+            elapsed = time.perf_counter() - start
+            await asyncio.to_thread(self.set, query, response, ns, elapsed)
+            result = CacheResult(response=response, hit=False)
+            future.set_result(result)
+            return result
+        except BaseException as exc:
+            if not future.done():
+                future.set_exception(exc)
+                # Retrieving the exception prevents an unobserved-future warning
+                # when there are no waiters.
+                future.add_done_callback(lambda completed: completed.exception())
+            raise
+        finally:
+            self._async_inflight.pop(key, None)
+
+    def async_cached(self, namespace: str | None = None, bypass: bool = False):
+        """Decorator for ``async def fn(prompt: str) -> str`` functions."""
+        import functools
+
+        def wrap(fn: AsyncCompute) -> AsyncCompute:
+            @functools.wraps(fn)
+            async def inner(prompt: str) -> str:
+                return (await self.async_get_or_compute(
+                    prompt, fn, namespace, bypass=bypass
+                )).response
 
             return inner
 
