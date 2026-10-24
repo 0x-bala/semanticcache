@@ -428,7 +428,8 @@ class TestGeminiVerifier:
         """When GeminiClient encounters HTTPError, the response is explicitly closed."""
         import io
         from urllib.error import HTTPError
-        from semantic_cache.gemini import GeminiClient, GeminiAPIError
+
+        from semantic_cache.gemini import GeminiAPIError, GeminiClient
 
         client = GeminiClient(api_key="fake-key")
         mock_err = HTTPError("url", 403, "Forbidden", {}, io.BytesIO(b"error"))

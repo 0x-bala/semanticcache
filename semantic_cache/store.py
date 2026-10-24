@@ -734,10 +734,23 @@ class SQLiteStore:
         }
 
     def close(self) -> None:
-        """Close the database connection."""
-        with self._lock:
-            if hasattr(self, "db") and self.db is not None:
-                self.db.close()
+        """Close the database connection (safe to call more than once)."""
+        self._close_db()
+
+    def _close_db(self) -> None:
+        # Shared by close() and __del__.  __del__ must not call the public, overridable
+        # close(): a patched or subclassed close() can run while the object is being
+        # garbage-collected, which crashed the interpreter in tests.
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            db = getattr(self, "db", None)
+            if db is not None:
+                db.close()
+            return
+        with lock:
+            db = getattr(self, "db", None)
+            if db is not None:
+                db.close()
 
     def __enter__(self) -> SQLiteStore:
         return self
@@ -747,6 +760,6 @@ class SQLiteStore:
 
     def __del__(self) -> None:
         try:
-            self.close()
+            self._close_db()
         except Exception:
             pass

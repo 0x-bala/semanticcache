@@ -115,7 +115,9 @@ def test_init_failure_does_not_mask_original_exception_when_close_fails(tmp_path
         def __getattr__(self, name):
             return getattr(self._real, name)
 
-    monkeypatch.setattr(sqlite3, "connect", lambda *a, **k: _FailingCloseConn(real_connect(*a, **k)))
+    monkeypatch.setattr(
+        sqlite3, "connect", lambda *a, **k: _FailingCloseConn(real_connect(*a, **k))
+    )
 
     with pytest.raises(RuntimeError, match="original table error"):
         SQLiteStore(path=str(tmp_path / "failing_cleanup.db"))
@@ -152,7 +154,9 @@ def test_migration_retry_exhaustion_fails_explicitly(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sqlite3, "connect", fake_connect)
 
-    with pytest.raises(sqlite3.OperationalError, match="Could not acquire migration lock after 40 attempts"):
+    with pytest.raises(
+        sqlite3.OperationalError, match="Could not acquire migration lock after 40 attempts"
+    ):
         SQLiteStore(path=str(tmp_path / "locked_mig.db"))
 
     assert len(conns) == 1
@@ -183,8 +187,9 @@ def test_wal_is_enabled_and_persists_for_second_opener(tmp_path):
 
 
 def test_concurrent_wal_operations(tmp_path):
-    """Concurrent readers and writers under WAL mode succeed without deadlocks or unclosed warnings."""
+    """Concurrent readers and writers under WAL mode succeed without deadlocks."""
     import concurrent.futures
+
     import numpy as np
 
     path = str(tmp_path / "concurrent_wal.db")
@@ -200,7 +205,9 @@ def test_concurrent_wal_operations(tmp_path):
                 vec = np.zeros(4, dtype=np.float32)
                 vec[worker_id % 4] = 1.0
                 for i in range(5):
-                    store.add(f"ns_{worker_id}", f"q_{worker_id}_{i}", vec, f"r_{worker_id}_{i}", None)
+                    store.add(
+                        f"ns_{worker_id}", f"q_{worker_id}_{i}", vec, f"r_{worker_id}_{i}", None
+                    )
                     assert store.size(f"ns_{worker_id}") >= 1
         except Exception as e:
             errors.append(e)

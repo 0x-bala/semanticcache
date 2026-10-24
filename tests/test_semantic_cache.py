@@ -1240,7 +1240,7 @@ class TestResourceLifecycle:
         real_close = SQLiteStore.close
 
         def track_close(store_self):
-            closed.append(store_self)
+            closed.append(id(store_self))
             return real_close(store_self)
 
         monkeypatch.setattr(SQLiteStore, "close", track_close)
@@ -1262,7 +1262,7 @@ class TestResourceLifecycle:
             store_db.execute("SELECT 1")
 
     def test_shared_store_not_closed_by_external_cache_close(self):
-        """Closing a cache that was given a shared store does not close the shared store by default."""
+        """Closing a cache given a shared store does not close that shared store by default."""
         store = SQLiteStore(path=":memory:", embedding_dim=DIM)
         emb = HashingEmbedder(dim=DIM)
         cache1 = SemanticCache(embedder=emb, store=store)

@@ -187,7 +187,9 @@ class GeminiVerifier:
                                 for detail in err_body.get("error", {}).get("details", []):
                                     if "retryDelay" in detail:
                                         raw_delay = detail["retryDelay"].rstrip("s")
-                                        requested_delay = max(requested_delay, float(raw_delay) + 1.0)
+                                        requested_delay = max(
+                                            requested_delay, float(raw_delay) + 1.0
+                                        )
                             except Exception:
                                 requested_delay = max(requested_delay, 5.0)
                             if requested_delay > 8.0:
