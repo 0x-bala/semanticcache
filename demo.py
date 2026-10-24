@@ -28,5 +28,8 @@ for q in queries:
         print(f"MISS        {time.perf_counter()-t:.3f}s  {q!r}")
 
 # Namespaces keep answers separate (e.g. different model or system prompt)
-print("other namespace hit?", cache.get("What is the capital of France?", "another-model") is not None)
+print(
+    "other namespace hit?",
+    cache.get("What is the capital of France?", "another-model") is not None,
+)
 print(f"hit rate: {cache.stats.hit_rate:.0%}, entries: {cache.store.size()}")

@@ -19,15 +19,19 @@ Concurrency:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
 from .embedders import validate_embedding
+from .guard import normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +90,66 @@ def _safe_load_blob(blob: bytes, expected_dim: int) -> np.ndarray | None:
 
 
 # ---------------------------------------------------------------------------
+# VectorIndex (pre-allocated doubling capacity index)
+# ---------------------------------------------------------------------------
+
+class VectorIndex:
+    """In-memory vector index with capacity-doubling geometric growth.
+
+    Pre-allocates an initial matrix capacity and doubles it whenever the
+    capacity is reached, reducing per-insert allocations and copies from O(N)
+    to O(1) amortized.
+    """
+
+    __slots__ = ("ids", "matrix", "count", "dim")
+
+    def __init__(self, ids: list[int], matrix: np.ndarray, dim: int) -> None:
+        self.ids = list(ids)
+        self.count = len(self.ids)
+        self.dim = dim
+        capacity = max(16, self.count)
+        if matrix.shape[0] < capacity:
+            self.matrix = np.zeros((capacity, dim), dtype=np.float32)
+            if self.count > 0:
+                self.matrix[: self.count] = matrix[: self.count]
+        else:
+            self.matrix = np.ascontiguousarray(matrix, dtype=np.float32)
+
+    def __iter__(self) -> Iterator[Any]:
+        """Allows unpacking as `ids, mat = index` for backward compatibility."""
+        return iter((self.ids, self.active_matrix()))
+
+    def __getitem__(self, item: int) -> Any:
+        if item == 0:
+            return self.ids
+        elif item == 1:
+            return self.active_matrix()
+        raise IndexError(f"VectorIndex index out of range: {item}")
+
+    def append(self, entry_id: int, vec: np.ndarray) -> None:
+        flat_vec = vec.reshape(-1)
+        dim = flat_vec.shape[0]
+        if self.dim == 0 and dim > 0:
+            self.dim = dim
+            if self.matrix.shape[1] == 0:
+                self.matrix = np.zeros((max(16, self.count + 1), dim), dtype=np.float32)
+
+        if self.count >= self.matrix.shape[0]:
+            new_capacity = max(16, self.matrix.shape[0] * 2)
+            new_mat = np.zeros((new_capacity, self.dim), dtype=np.float32)
+            if self.count > 0:
+                new_mat[: self.count] = self.matrix[: self.count]
+            self.matrix = new_mat
+
+        self.matrix[self.count] = flat_vec
+        self.ids.append(entry_id)
+        self.count += 1
+
+    def active_matrix(self) -> np.ndarray:
+        return self.matrix[: self.count]
+
+
+# ---------------------------------------------------------------------------
 # SQLiteStore
 # ---------------------------------------------------------------------------
 
@@ -135,17 +199,49 @@ class SQLiteStore:
                 created_at  REAL    NOT NULL,
                 expires_at  REAL,
                 hits        INTEGER NOT NULL DEFAULT 0,
-                last_hit_at REAL
+                last_hit_at REAL,
+                query_hash  TEXT,
+                embedder    TEXT    NOT NULL DEFAULT ''
             )"""
         )
+        # Migrate existing tables if columns are missing
+        existing_cols = {
+            row[1] for row in self.db.execute("PRAGMA table_info(entries)").fetchall()
+        }
+        if "query_hash" not in existing_cols:
+            self.db.execute("ALTER TABLE entries ADD COLUMN query_hash TEXT")
+        if "embedder" not in existing_cols:
+            self.db.execute("ALTER TABLE entries ADD COLUMN embedder TEXT NOT NULL DEFAULT ''")
+
+        # Backfill query_hash for legacy rows where missing
+        unhashed = self.db.execute(
+            "SELECT id, query FROM entries WHERE query_hash IS NULL OR query_hash = ''"
+        ).fetchall()
+        if unhashed:
+            updates = [
+                (hashlib.sha256(normalize_text(q).encode("utf-8")).hexdigest(), rid)
+                for rid, q in unhashed
+            ]
+            self.db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
+
         self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)"
         )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)"
+        )
+        self.db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_entries_exact "
+            "ON entries(namespace, query_hash, embedder)"
+        )
         self.db.commit()
 
-        # namespace -> (ids: list[int], matrix: np.ndarray[shape=(n, dim)])
-        self._index: dict[str, tuple[list[int], np.ndarray]] = {}
+        # index_key -> VectorIndex
+        self._index: dict[str, VectorIndex] = {}
 
     # ------------------------------------------------------------------
     # Writes
@@ -158,6 +254,8 @@ class SQLiteStore:
         embedding: np.ndarray,
         response: str,
         ttl: float | None,
+        query_hash: str | None = None,
+        embedder: str = "",
     ) -> int:
         """Insert a new cache entry.  Returns the new entry ID."""
         _validate_namespace(namespace)
@@ -175,15 +273,31 @@ class SQLiteStore:
         with self._lock:
             cur = self.db.execute(
                 """INSERT INTO entries
-                   (namespace, query, embedding, response, created_at, expires_at)
-                   VALUES (?,?,?,?,?,?)""",
-                (namespace, query, blob, response, now, now + ttl if ttl else None),
+                   (namespace, query, embedding, response, created_at,
+                    expires_at, query_hash, embedder)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (
+                    namespace,
+                    query,
+                    blob,
+                    response,
+                    now,
+                    now + ttl if ttl else None,
+                    query_hash,
+                    embedder,
+                ),
             )
             self.db.commit()
             entry_id: int = cur.lastrowid  # type: ignore[assignment]
 
-            # Invalidate only the affected namespace, not the whole index
-            self._index.pop(namespace, None)
+            # Incremental index update: append vector using geometric doubling growth
+            index_keys = [namespace]
+            if embedder:
+                index_keys.append(f"{namespace}::{embedder}")
+
+            for ikey in index_keys:
+                if ikey in self._index:
+                    self._index[ikey].append(entry_id, embedding)
 
             if self._max_entries is not None:
                 self._evict_lru_if_needed()
@@ -210,21 +324,66 @@ class SQLiteStore:
             self._index.clear()
 
     # ------------------------------------------------------------------
+    # Exact Match Lookup
+    # ------------------------------------------------------------------
+
+    def find_exact(
+        self,
+        namespace: str,
+        query_hash: str,
+        embedder: str | None = None,
+    ) -> Entry | None:
+        """Find an entry by exact query hash without embedding comparison."""
+        _validate_namespace(namespace)
+        now = time.time()
+        with self._lock:
+            if embedder:
+                cur = self.db.execute(
+                    """SELECT id, query, response, expires_at FROM entries
+                       WHERE namespace=? AND query_hash=? AND embedder=?
+                         AND (expires_at IS NULL OR expires_at > ?)
+                       ORDER BY id DESC LIMIT 1""",
+                    (namespace, query_hash, embedder, now),
+                )
+            else:
+                cur = self.db.execute(
+                    """SELECT id, query, response, expires_at FROM entries
+                       WHERE namespace=? AND query_hash=?
+                         AND (expires_at IS NULL OR expires_at > ?)
+                       ORDER BY id DESC LIMIT 1""",
+                    (namespace, query_hash, now),
+                )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return Entry(id=row[0], query=row[1], response=row[2], score=1.0)
+
+    # ------------------------------------------------------------------
     # Index loading (internal)
     # ------------------------------------------------------------------
 
-    def _load(self, namespace: str) -> tuple[list[int], np.ndarray]:
-        """Load (or return cached) the in-memory vector matrix for *namespace*.
+    def _load(self, namespace: str, embedder: str | None = None) -> VectorIndex:
+        """Load (or return cached) the in-memory vector index for *namespace*.
         Caller must hold ``self._lock``.
         """
-        if namespace in self._index:
-            return self._index[namespace]
+        index_key = f"{namespace}::{embedder}" if embedder else namespace
+        if index_key in self._index:
+            return self._index[index_key]
 
-        rows = self.db.execute(
-            """SELECT id, embedding FROM entries
-               WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)""",
-            (namespace, time.time()),
-        ).fetchall()
+        now = time.time()
+        if embedder:
+            rows = self.db.execute(
+                """SELECT id, embedding FROM entries
+                   WHERE namespace=? AND embedder=?
+                     AND (expires_at IS NULL OR expires_at > ?)""",
+                (namespace, embedder, now),
+            ).fetchall()
+        else:
+            rows = self.db.execute(
+                """SELECT id, embedding FROM entries
+                   WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)""",
+                (namespace, now),
+            ).fetchall()
 
         ids: list[int] = []
         vecs: list[np.ndarray] = []
@@ -235,19 +394,26 @@ class SQLiteStore:
                 vecs.append(vec)
 
         if vecs:
-            mat = np.vstack(vecs)  # shape (n, dim) — writeable copy
+            initial_mat = np.vstack(vecs)
+            dim = initial_mat.shape[1]
         else:
             dim = self._embedding_dim or 0
-            mat = np.zeros((0, dim), dtype=np.float32)
+            initial_mat = np.zeros((0, dim), dtype=np.float32)
 
-        self._index[namespace] = (ids, mat)
-        return ids, mat
+        vindex = VectorIndex(ids, initial_mat, dim)
+        self._index[index_key] = vindex
+        return vindex
 
     # ------------------------------------------------------------------
     # Reads
     # ------------------------------------------------------------------
 
-    def search(self, namespace: str, embedding: np.ndarray) -> Entry | None:
+    def search(
+        self,
+        namespace: str,
+        embedding: np.ndarray,
+        embedder: str | None = None,
+    ) -> Entry | None:
         """Find the nearest stored entry by cosine similarity.
 
         Returns None when the namespace is empty, all entries have expired,
@@ -256,9 +422,11 @@ class SQLiteStore:
         """
         _validate_namespace(namespace)
         embedding = validate_embedding(embedding, self._embedding_dim)
+        index_key = f"{namespace}::{embedder}" if embedder else namespace
 
         with self._lock:
-            ids, mat = self._load(namespace)
+            vindex = self._load(namespace, embedder)
+            ids, mat = vindex.ids, vindex.active_matrix()
             if not ids:
                 return None
 
@@ -274,13 +442,14 @@ class SQLiteStore:
 
             if row is None:
                 # Row was deleted between index build and now
-                self._index.pop(namespace, None)
+                self._index.pop(index_key, None)
                 return None
 
             if row[2] is not None and row[2] <= time.time():
                 # Best entry has expired; rebuild once and re-search
-                self._index.pop(namespace, None)
-                ids2, mat2 = self._load(namespace)
+                self._index.pop(index_key, None)
+                vindex2 = self._load(namespace, embedder)
+                ids2, mat2 = vindex2.ids, vindex2.active_matrix()
                 if not ids2:
                     return None
                 scores2 = mat2 @ embedding
@@ -319,7 +488,10 @@ class SQLiteStore:
                 (namespace, query),
             )
             self.db.commit()
-            self._index.pop(namespace, None)
+            self._index = {
+                k: v for k, v in self._index.items()
+                if not (k == namespace or k.startswith(f"{namespace}::"))
+            }
             return cur.rowcount
 
     def invalidate_expired(self) -> int:
@@ -343,7 +515,10 @@ class SQLiteStore:
                 self.db.execute(
                     "DELETE FROM entries WHERE namespace=?", (namespace,)
                 )
-                self._index.pop(namespace, None)  # only drop affected namespace
+                self._index = {
+                    k: v for k, v in self._index.items()
+                    if not (k == namespace or k.startswith(f"{namespace}::"))
+                }
             else:
                 self.db.execute("DELETE FROM entries")
                 self._index.clear()

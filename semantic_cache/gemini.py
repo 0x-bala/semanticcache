@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -36,7 +37,9 @@ class GeminiClient:
             raise ValueError("Set GEMINI_API_KEY or pass api_key from a secret manager")
         self.timeout = timeout
 
-    def _request(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self, method: str, payload: dict[str, Any], max_retries: int = 3
+    ) -> dict[str, Any]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{method}?key={self.api_key}"
         request = Request(
             url,
@@ -44,11 +47,24 @@ class GeminiClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        try:
-            with urlopen(request, timeout=self.timeout) as response:
-                return json.load(response)
-        except (HTTPError, URLError, TimeoutError) as exc:
-            raise GeminiAPIError(f"Gemini request failed: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                with urlopen(request, timeout=self.timeout) as response:
+                    return json.load(response)
+            except HTTPError as exc:
+                last_exc = exc
+                if exc.code in (429, 500, 502, 503, 504) and attempt < max_retries - 1:
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                raise GeminiAPIError(f"Gemini request failed: {exc}") from exc
+            except (URLError, TimeoutError) as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    time.sleep(1.0 * (2 ** attempt))
+                    continue
+                raise GeminiAPIError(f"Gemini request failed: {exc}") from exc
+        raise GeminiAPIError(f"Gemini request failed after {max_retries} attempts: {last_exc}")
 
     def generate(self, prompt: str, system_instruction: str | None = None) -> str:
         """Generate a text response for a single prompt."""

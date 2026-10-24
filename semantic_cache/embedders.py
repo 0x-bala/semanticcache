@@ -185,3 +185,51 @@ class SentenceTransformerEmbedder:
         vec = np.asarray(v, dtype=np.float32)
         # Validate before returning
         return validate_embedding(vec)
+
+
+# ---------------------------------------------------------------------------
+# EmbeddingLRUCache
+# ---------------------------------------------------------------------------
+
+class EmbeddingLRUCache:
+    """Thread-safe LRU cache for embedding vectors."""
+
+    def __init__(self, capacity: int = 1000) -> None:
+        import collections
+        import threading
+
+        self.capacity = max(1, capacity)
+        self._lock = threading.Lock()
+        self._cache: collections.OrderedDict[tuple[str, str], np.ndarray] = (
+            collections.OrderedDict()
+        )
+
+    def get(self, embedder_name: str, normalized_text: str) -> np.ndarray | None:
+        """Retrieve a cached vector or None if not present."""
+        key = (embedder_name, normalized_text)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key].copy()
+        return None
+
+    def put(self, embedder_name: str, normalized_text: str, vec: np.ndarray) -> None:
+        """Store a vector in the cache, evicting oldest if capacity reached."""
+        key = (embedder_name, normalized_text)
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            else:
+                if len(self._cache) >= self.capacity:
+                    self._cache.popitem(last=False)
+            self._cache[key] = vec.copy()
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._cache)
+
+    def clear(self) -> None:
+        """Clear all cached embeddings."""
+        with self._lock:
+            self._cache.clear()
+

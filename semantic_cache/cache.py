@@ -24,15 +24,24 @@ Security notes
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
+import random
 import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from .embedders import Embedder, HashingEmbedder, is_zero_vector
+from .embedders import (
+    Embedder,
+    EmbeddingLRUCache,
+    HashingEmbedder,
+    is_zero_vector,
+    validate_embedding,
+)
+from .guard import GuardVerdict, check_match, normalize_text
 from .protocols import CacheStore
 from .store import SQLiteStore
 
@@ -65,6 +74,21 @@ def _validate_namespace(ns: str) -> str:
     return ns
 
 
+def _detect_embedder_name(embedder: Any) -> str:
+    if hasattr(embedder, "_embedder") and embedder._embedder is not None:
+        return _detect_embedder_name(embedder._embedder)
+    if hasattr(embedder, "model_name") and embedder.model_name:
+        return str(embedder.model_name)
+    if hasattr(embedder, "model") and embedder.model:
+        return str(embedder.model)
+    if hasattr(embedder, "name") and embedder.name:
+        return str(embedder.name)
+    cls_name = embedder.__class__.__name__
+    if hasattr(embedder, "dim"):
+        return f"{cls_name}:{embedder.dim}"
+    return cls_name
+
+
 # ---------------------------------------------------------------------------
 # Public data classes
 # ---------------------------------------------------------------------------
@@ -79,6 +103,13 @@ class Stats:
     hits: int = 0
     misses: int = 0
     errors: int = 0
+    guard_rejects: int = 0
+    verify_calls: int = 0
+    verify_accepts: int = 0
+    exact_hits: int = 0
+    shadow_evaluations: int = 0
+    shadow_matches: int = 0
+    shadow_mismatches: int = 0
     seconds_saved: float = 0.0
     # entry_id -> measured latency (seconds) of the original compute call
     _latency: dict[int, float] = field(default_factory=dict, repr=False)
@@ -88,11 +119,25 @@ class Stats:
         total = self.hits + self.misses
         return self.hits / total if total else 0.0
 
+    @property
+    def estimated_false_hit_rate(self) -> float:
+        """Estimated false-hit rate from shadow-mode evaluations (0.0 if no evaluations)."""
+        if self.shadow_evaluations == 0:
+            return 0.0
+        return self.shadow_mismatches / self.shadow_evaluations
+
     def reset(self) -> None:
         """Reset all counters and the latency map."""
         self.hits = 0
         self.misses = 0
         self.errors = 0
+        self.guard_rejects = 0
+        self.verify_calls = 0
+        self.verify_accepts = 0
+        self.exact_hits = 0
+        self.shadow_evaluations = 0
+        self.shadow_matches = 0
+        self.shadow_mismatches = 0
         self.seconds_saved = 0.0
         self._latency.clear()
 
@@ -102,6 +147,14 @@ class Stats:
             "hits": self.hits,
             "misses": self.misses,
             "errors": self.errors,
+            "guard_rejects": self.guard_rejects,
+            "verify_calls": self.verify_calls,
+            "verify_accepts": self.verify_accepts,
+            "exact_hits": self.exact_hits,
+            "shadow_evaluations": self.shadow_evaluations,
+            "shadow_matches": self.shadow_matches,
+            "shadow_mismatches": self.shadow_mismatches,
+            "estimated_false_hit_rate": round(self.estimated_false_hit_rate, 4),
             "seconds_saved": round(self.seconds_saved, 4),
             "hit_rate": round(self.hit_rate, 4),
         }
@@ -123,6 +176,7 @@ HitCallback = Callable[[CacheResult], None]
 MissCallback = Callable[[str], None]
 ErrorCallback = Callable[[str, Exception], None]
 AsyncCompute = Callable[[str], Awaitable[str]]
+VerifierCallback = Callable[[str, str], bool]
 
 
 # ---------------------------------------------------------------------------
@@ -161,6 +215,22 @@ class SemanticCache:
         Optional callback invoked on every cache miss.
     on_error:
         Optional callback invoked when a compute function raises.
+    guard:
+        When ``True`` (default), run semantic hit guard on candidate hits to
+        prevent number mismatches, unit inversions, and entity slot substitutions.
+    guard_buffer:
+        Score range [threshold, threshold + guard_buffer] subject to VERIFY.
+        Candidates above this threshold skip VERIFY, but still apply REJECT rules.
+        Default is 0.03.
+    verifier:
+        Optional callable ``verifier(new_query, cached_query) -> bool`` called
+        when guard returns VERIFY within the borderline buffer. If None, VERIFY
+        is treated as a cache miss.
+    exact_match:
+        When ``True`` (default), check normalized query hash first to return
+        immediate exact hits without calling the embedder.
+    embedding_lru_capacity:
+        Maximum number of vectors to retain in the embedding LRU cache (default 1000).
     """
 
     def __init__(
@@ -175,8 +245,17 @@ class SemanticCache:
         on_hit: HitCallback | None = None,
         on_miss: MissCallback | None = None,
         on_error: ErrorCallback | None = None,
+        *,
+        guard: bool = True,
+        guard_buffer: float = 0.03,
+        verifier: VerifierCallback | None = None,
+        verify_always: bool = True,
+        shadow_rate: float = 0.0,
+        exact_match: bool = True,
+        embedding_lru_capacity: int = 1000,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
+        self._embedder_name: str = _detect_embedder_name(self.embedder)
         self.store: CacheStore = store or SQLiteStore()
         self.threshold: float = _validate_threshold(threshold)
         self.ttl = ttl
@@ -186,7 +265,15 @@ class SemanticCache:
         self._on_hit = on_hit
         self._on_miss = on_miss
         self._on_error = on_error
+        self.guard: bool = guard
+        self.guard_buffer: float = guard_buffer
+        self.verifier: VerifierCallback | None = verifier
+        self.verify_always: bool = verify_always
+        self.shadow_rate: float = max(0.0, min(1.0, float(shadow_rate)))
+        self.exact_match: bool = exact_match
+        self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
         self.stats = Stats()
+        self._stats_lock = threading.Lock()
 
         # Single-flight: query -> (lock, result/exception)
         self._inflight: dict[str, list[Any]] = {}
@@ -204,6 +291,9 @@ class SemanticCache:
         query: str,
         namespace: str | None = None,
         bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
     ) -> CacheResult | None:
         """Look up *query* in the cache.
 
@@ -217,14 +307,57 @@ class SemanticCache:
             Override the instance-level namespace for this call.
         bypass:
             When ``True``, skip the cache and always return ``None``.
+        threshold:
+            Per-call similarity threshold override.
+        guard:
+            Per-call toggle for hit guard evaluation (defaults to self.guard).
+        verify_always:
+            Per-call toggle for whether VERIFY rules apply at all scores.
         """
         if not self.enabled or bypass:
             return None
 
         ns = _validate_namespace(namespace or self.namespace)
+        eff_threshold = _validate_threshold(threshold) if threshold is not None else self.threshold
+        use_guard = self.guard if guard is None else guard
+        eff_verify_always = self.verify_always if verify_always is None else verify_always
 
+        norm_query = normalize_text(query)
+        query_hash = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()
+
+        # Exact match tier: check hash before embedding API call
+        if self.exact_match and hasattr(self.store, "find_exact"):
+            try:
+                exact_entry = self.store.find_exact(ns, query_hash, embedder=self._embedder_name)
+                if exact_entry is not None:
+                    self.store.record_hit(exact_entry.id)
+                    self.stats.hits += 1
+                    self.stats.exact_hits += 1
+                    saved = self.stats._latency.get(exact_entry.id, 0.0)
+                    self.stats.seconds_saved += saved
+                    result = CacheResult(
+                        response=exact_entry.response,
+                        hit=True,
+                        score=1.0,
+                        matched_query=exact_entry.query,
+                    )
+                    if self._on_hit:
+                        try:
+                            self._on_hit(result)
+                        except Exception:
+                            pass
+                    return result
+            except Exception as exc:
+                logger.warning("Exact match lookup failed: %s", exc)
+
+        # LRU cached embedding
         try:
-            vec = self.embedder.embed(query)
+            vec = self._embedding_lru.get(self._embedder_name, norm_query)
+            if vec is None:
+                vec = self.embedder.embed(query)
+                vec = validate_embedding(vec)
+                if not is_zero_vector(vec):
+                    self._embedding_lru.put(self._embedder_name, norm_query, vec)
         except Exception as exc:
             logger.warning("Embedder failed during get: %s", exc)
             self.stats.misses += 1
@@ -237,46 +370,98 @@ class SemanticCache:
             return None
 
         try:
-            entry = self.store.search(ns, vec)
+            if hasattr(self.store, "search"):
+                try:
+                    entry = self.store.search(ns, vec, embedder=self._embedder_name)
+                except TypeError:
+                    entry = self.store.search(ns, vec)
+            else:
+                entry = self.store.search(ns, vec)
         except Exception as exc:
             logger.warning("Store search failed: %s", exc)
             self.stats.misses += 1
             return None
 
-        if entry is not None and entry.score >= self.threshold:
-            self.store.record_hit(entry.id)
-            self.stats.hits += 1
-            saved = self.stats._latency.get(entry.id, 0.0)
-            self.stats.seconds_saved += saved
-
-            result = CacheResult(
-                response=entry.response,
-                hit=True,
-                score=entry.score,
-                matched_query=entry.query,
-            )
-            if self._log_queries:
-                logger.debug(
-                    "cache.hit ns=%r score=%.4f query=%r matched=%r",
-                    ns, entry.score, query, entry.query,
-                )
-            else:
-                logger.debug("cache.hit ns=%r score=%.4f", ns, entry.score)
-
-            if self._on_hit:
+        if entry is None or entry.score < eff_threshold:
+            self.stats.misses += 1
+            if self._on_miss:
                 try:
-                    self._on_hit(result)
+                    self._on_miss(query)
                 except Exception:
                     pass
-            return result
+            return None
 
-        self.stats.misses += 1
-        if self._on_miss:
+        # Guard evaluation
+        if use_guard:
+            guard_result = check_match(query, entry.query)
+            if guard_result.verdict == GuardVerdict.REJECT:
+                logger.debug("Guard REJECT: %s", guard_result.reason)
+                self.stats.guard_rejects += 1
+                self.stats.misses += 1
+                if self._on_miss:
+                    try:
+                        self._on_miss(query)
+                    except Exception:
+                        pass
+                return None
+            elif guard_result.verdict == GuardVerdict.VERIFY:
+                should_verify = eff_verify_always or (
+                    entry.score < eff_threshold + self.guard_buffer
+                )
+                if should_verify:
+                    if self.verifier is not None:
+                        self.stats.verify_calls += 1
+                        try:
+                            verified = self.verifier(query, entry.query)
+                        except Exception as exc:
+                            logger.warning("Verifier raised exception: %s", exc)
+                            verified = False
+
+                        if not verified:
+                            self.stats.misses += 1
+                            if self._on_miss:
+                                try:
+                                    self._on_miss(query)
+                                except Exception:
+                                    pass
+                            return None
+                        self.stats.verify_accepts += 1
+                    else:
+                        # If no verifier configured, treat VERIFY as a miss
+                        self.stats.misses += 1
+                        if self._on_miss:
+                            try:
+                                self._on_miss(query)
+                            except Exception:
+                                pass
+                        return None
+
+        # Hit accepted
+        self.store.record_hit(entry.id)
+        self.stats.hits += 1
+        saved = self.stats._latency.get(entry.id, 0.0)
+        self.stats.seconds_saved += saved
+
+        result = CacheResult(
+            response=entry.response,
+            hit=True,
+            score=entry.score,
+            matched_query=entry.query,
+        )
+        if self._log_queries:
+            logger.debug(
+                "cache.hit ns=%r score=%.4f query=%r matched=%r",
+                ns, entry.score, query, entry.query,
+            )
+        else:
+            logger.debug("cache.hit ns=%r score=%.4f", ns, entry.score)
+
+        if self._on_hit:
             try:
-                self._on_miss(query)
+                self._on_hit(result)
             except Exception:
                 pass
-        return None
+        return result
 
     def set(
         self,
@@ -306,9 +491,16 @@ class SemanticCache:
             raise ValueError("response must be a non-empty string")
 
         ns = _validate_namespace(namespace or self.namespace)
+        norm_query = normalize_text(query)
+        query_hash = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()
 
         try:
-            vec = self.embedder.embed(query)
+            vec = self._embedding_lru.get(self._embedder_name, norm_query)
+            if vec is None:
+                vec = self.embedder.embed(query)
+                vec = validate_embedding(vec)
+                if not is_zero_vector(vec):
+                    self._embedding_lru.put(self._embedder_name, norm_query, vec)
         except Exception as exc:
             logger.warning("Embedder failed during set — entry not stored: %s", exc)
             return
@@ -317,7 +509,19 @@ class SemanticCache:
             logger.debug("Zero embedding vector — skipping cache set")
             return
 
-        entry_id = self.store.add(ns, query, vec, response, self.ttl)
+        try:
+            entry_id = self.store.add(
+                ns,
+                query,
+                vec,
+                response,
+                self.ttl,
+                query_hash=query_hash,
+                embedder=self._embedder_name,
+            )
+        except TypeError:
+            entry_id = self.store.add(ns, query, vec, response, self.ttl)
+
         # Only retain latency for a bounded window to prevent unbounded growth.
         # Entries evicted from the store become unreachable, so we can prune
         # latencies for IDs that are no longer in the store.  For simplicity
@@ -333,6 +537,9 @@ class SemanticCache:
         compute: Callable[[str], str],
         namespace: str | None = None,
         bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
     ) -> CacheResult:
         """Return a cached result, or call *compute* and store the result.
 
@@ -342,23 +549,11 @@ class SemanticCache:
           same query simultaneously, only one calls ``compute``.  The other
           waits and receives the same result.  This prevents duplicate LLM calls.
         - **Exception safety**: if ``compute`` raises, the exception propagates
-          to the caller, nothing is cached, and the event is set so all waiting
-          callers are unblocked and re-raise the same exception.
         - **No caching of failed results**: only successful, non-empty strings
           are stored.
-
-        When ``bypass=True`` (or the cache is globally disabled), the cache is
-        not consulted or written to.  Each bypass call computes independently;
-        it deliberately does not participate in single-flight coalescing.
-
-        Concurrency note: single-flight operates within one process only.
-        Across multiple processes, duplicate ``compute`` calls can still occur.
         """
         ns = _validate_namespace(namespace or self.namespace)
 
-        # A bypass must be a true no-cache operation: do not generate an
-        # embedding, touch the store, or join an ordinary request's inflight
-        # computation.  Globally disabled caches use the same uncached path.
         if bypass or not self.enabled:
             try:
                 response = compute(query)
@@ -377,17 +572,41 @@ class SemanticCache:
                 raise
             return CacheResult(response=response, hit=False)
 
-        cached = self.get(query, ns)
+        cached = self.get(
+            query,
+            ns,
+            threshold=threshold,
+            guard=guard,
+            verify_always=verify_always,
+        )
         if cached:
+            # Shadow evaluation
+            if self.shadow_rate > 0.0 and random.random() < self.shadow_rate:
+                try:
+                    fresh_response = compute(query)
+                    is_match = False
+                    if self.verifier is not None:
+                        try:
+                            is_match = self.verifier(fresh_response, cached.response)
+                        except Exception:
+                            is_match = (
+                                fresh_response.strip().lower() == cached.response.strip().lower()
+                            )
+                    else:
+                        is_match = (fresh_response.strip() == cached.response.strip())
+
+                    with self._stats_lock:
+                        self.stats.shadow_evaluations += 1
+                        if is_match:
+                            self.stats.shadow_matches += 1
+                        else:
+                            self.stats.shadow_mismatches += 1
+                except Exception as exc:
+                    logger.warning("Shadow mode evaluation failed: %s", exc)
             return cached
 
         flight_key = f"{ns}:{query}"
 
-        # Each inflight slot is a two-element list: [Event, result_or_exc|None].
-        # Using a list (not just the Event) so the computing thread can store its
-        # result in-place while waiters hold a reference to the same slot.
-        # This avoids the race where result was popped from a separate dict before
-        # the waiter could read it.
         with self._inflight_lock:
             if flight_key in self._inflight:
                 slot = self._inflight[flight_key]
@@ -444,7 +663,14 @@ class SemanticCache:
                 self._inflight.pop(flight_key, None)
             return result
 
-    def cached(self, namespace: str | None = None, bypass: bool = False):
+    def cached(
+        self,
+        namespace: str | None = None,
+        bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ):
         """Decorator for any ``fn(prompt: str) -> str`` (e.g. your LLM call).
 
         Usage::
@@ -454,9 +680,6 @@ class SemanticCache:
             @cache.cached(namespace="gpt4:v1")
             def ask_llm(prompt: str) -> str:
                 return openai.chat(prompt)
-
-        The decorated function raises the original exception unchanged if the
-        compute function fails.
         """
         import functools
 
@@ -464,7 +687,13 @@ class SemanticCache:
             @functools.wraps(fn)
             def inner(prompt: str) -> str:
                 return self.get_or_compute(
-                    prompt, fn, namespace, bypass=bypass
+                    prompt,
+                    fn,
+                    namespace,
+                    bypass=bypass,
+                    threshold=threshold,
+                    guard=guard,
+                    verify_always=verify_always,
                 ).response
 
             return inner
@@ -477,6 +706,9 @@ class SemanticCache:
         compute: AsyncCompute,
         namespace: str | None = None,
         bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
     ) -> CacheResult:
         """Async equivalent of :meth:`get_or_compute`.
 
@@ -511,8 +743,32 @@ class SemanticCache:
         if bypass or not self.enabled:
             return CacheResult(response=await compute_fresh(), hit=False)
 
-        cached = await asyncio.to_thread(self.get, query, ns)
+        cached = await asyncio.to_thread(
+            self.get, query, ns, bypass, threshold, guard, verify_always
+        )
         if cached:
+            if self.shadow_rate > 0.0 and random.random() < self.shadow_rate:
+                try:
+                    fresh_response = await compute_fresh()
+                    is_match = False
+                    if self.verifier is not None:
+                        try:
+                            is_match = self.verifier(fresh_response, cached.response)
+                        except Exception:
+                            is_match = (
+                                fresh_response.strip().lower() == cached.response.strip().lower()
+                            )
+                    else:
+                        is_match = (fresh_response.strip() == cached.response.strip())
+
+                    with self._stats_lock:
+                        self.stats.shadow_evaluations += 1
+                        if is_match:
+                            self.stats.shadow_matches += 1
+                        else:
+                            self.stats.shadow_mismatches += 1
+                except Exception as exc:
+                    logger.warning("Shadow mode async evaluation failed: %s", exc)
             return cached
 
         key = f"{ns}:{query}"
@@ -541,7 +797,14 @@ class SemanticCache:
         finally:
             self._async_inflight.pop(key, None)
 
-    def async_cached(self, namespace: str | None = None, bypass: bool = False):
+    def async_cached(
+        self,
+        namespace: str | None = None,
+        bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ):
         """Decorator for ``async def fn(prompt: str) -> str`` functions."""
         import functools
 
@@ -549,11 +812,16 @@ class SemanticCache:
             @functools.wraps(fn)
             async def inner(prompt: str) -> str:
                 return (await self.async_get_or_compute(
-                    prompt, fn, namespace, bypass=bypass
+                    prompt,
+                    fn,
+                    namespace,
+                    bypass=bypass,
+                    threshold=threshold,
+                    guard=guard,
+                    verify_always=verify_always,
                 )).response
 
             return inner
-
         return wrap
 
     # ------------------------------------------------------------------

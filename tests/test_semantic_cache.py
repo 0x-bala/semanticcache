@@ -10,27 +10,27 @@ No network access or live AI APIs are required.
 from __future__ import annotations
 
 import asyncio
+import pathlib
+
+# We import via the package so the relative imports work correctly
+import sys
 import threading
 import time
-from typing import Optional
+
 import numpy as np
 import pytest
 
-# We import via the package so the relative imports work correctly
-import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
+from semantic_cache.cache import CacheResult, SemanticCache, Stats
+from semantic_cache.context import CacheContext
 from semantic_cache.embedders import (
     HashingEmbedder,
-    validate_embedding,
     is_zero_vector,
-    _validate_text,
+    validate_embedding,
 )
-from semantic_cache.store import SQLiteStore
-from semantic_cache.cache import SemanticCache, Stats, CacheResult
-from semantic_cache.context import CacheContext
 from semantic_cache.gemini import GeminiClient, GeminiEmbedder
-
+from semantic_cache.store import SQLiteStore
 
 # ===========================================================================
 # Fixtures / helpers
@@ -48,7 +48,7 @@ class FixedEmbedder:
         self.dim = dim
         self._map: dict[str, np.ndarray] = {}
 
-    def register(self, text: str, vec: np.ndarray) -> "FixedEmbedder":
+    def register(self, text: str, vec: np.ndarray) -> FixedEmbedder:
         self._map[text] = vec.astype(np.float32)
         return self
 
@@ -330,9 +330,8 @@ class TestSQLiteStore:
             ("ns", "corrupt", b"\xff\xfe", "bad", time.time()),
         )
         store.db.commit()
-        # Should not raise — corrupt entry is skipped
         result = store.search("ns", self._make_vec(0))
-        # result may be None (if only corrupt entry) — that's correct behavior
+        assert result is None
 
     def test_blob_is_writable_copy(self):
         """Regression: np.frombuffer returns read-only; validate_embedding must copy."""
@@ -1137,9 +1136,15 @@ class TestBackwardCompatibility:
         cache = SemanticCache(threshold=0.75, ttl=3600)
         calls = [0]
 
-        ask = cache.cached(namespace="test:v1")(lambda p: f"answer:{p}")
+        def compute(p: str) -> str:
+            calls[0] += 1
+            return f"answer:{p}"
+
+        ask = cache.cached(namespace="test:v1")(compute)
         result = ask("hello")
         assert result == "answer:hello"
+        assert ask("hello") == "answer:hello"
+        assert calls[0] == 1
 
 
 # ===========================================================================
@@ -1186,8 +1191,10 @@ class TestInvalidateExpired:
 
     def test_invalidate_removes_only_expired(self):
         store = SQLiteStore(path=":memory:", embedding_dim=DIM)
-        v0 = np.zeros(DIM, dtype=np.float32); v0[0] = 1.0
-        v1 = np.zeros(DIM, dtype=np.float32); v1[1] = 1.0
+        v0 = np.zeros(DIM, dtype=np.float32)
+        v0[0] = 1.0
+        v1 = np.zeros(DIM, dtype=np.float32)
+        v1[1] = 1.0
 
         store.add("ns", "q-expire", v0, "r0", ttl=0.05)
         store.add("ns", "q-keep",   v1, "r1", ttl=None)

@@ -9,17 +9,18 @@ No network access required.
 """
 from __future__ import annotations
 
+import pathlib
 import statistics
 import sys
-import pathlib
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
 
 import numpy as np
+
+from semantic_cache.cache import SemanticCache
 from semantic_cache.embedders import HashingEmbedder
 from semantic_cache.store import SQLiteStore
-from semantic_cache.cache import SemanticCache
 
 REPS = 500
 DIM = 1024
@@ -72,7 +73,10 @@ for i in range(100):
 
 probe = vecs[0]
 bench("SQLiteStore.search() (100 entries)", lambda: store_small.search("ns", probe))
-bench("SQLiteStore.add()    (100 entries)", lambda: store_small.add("ns", "new-q", probe, "r", ttl=None))
+bench(
+    "SQLiteStore.add()    (100 entries)",
+    lambda: store_small.add("ns", "new-q", probe, "r", ttl=None),
+)
 
 print("\n=== SQLiteStore (in-memory, 1000 entries) ===")
 
@@ -90,7 +94,11 @@ bench("SQLiteStore.search() (1000 entries)", lambda: store_large.search("ns", pr
 
 print("\n=== SemanticCache end-to-end ===")
 
-cache = SemanticCache(embedder=emb, store=SQLiteStore(path=":memory:", embedding_dim=DIM), threshold=0.85)
+cache = SemanticCache(
+    embedder=emb,
+    store=SQLiteStore(path=":memory:", embedding_dim=DIM),
+    threshold=0.85,
+)
 cache.set(short_text, "Paris")
 
 bench("cache.get()  (HIT, warm index)",  lambda: cache.get(short_text))
@@ -116,7 +124,11 @@ def fake_slow_llm(p: str) -> str:
     return "answer"
 
 # Warm cache
-cache2 = SemanticCache(embedder=emb, store=SQLiteStore(path=":memory:", embedding_dim=DIM), threshold=0.85)
+cache2 = SemanticCache(
+    embedder=emb,
+    store=SQLiteStore(path=":memory:", embedding_dim=DIM),
+    threshold=0.85,
+)
 cache2.set(short_text, "Paris")
 
 n = 20

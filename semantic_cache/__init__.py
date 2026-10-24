@@ -20,16 +20,18 @@ from .cache import CacheResult, SemanticCache, Stats
 from .context import CacheContext
 from .embedders import (
     Embedder,
+    EmbeddingLRUCache,
     HashingEmbedder,
     SentenceTransformerEmbedder,
     is_zero_vector,
     validate_embedding,
 )
 from .gemini import GeminiAPIError, GeminiClient, GeminiEmbedder
+from .guard import GuardResult, GuardVerdict, check_match, normalize_text
 from .protocols import CacheStore
 from .store import SQLiteStore
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     # Cache
@@ -42,11 +44,17 @@ __all__ = [
     "CacheStore",
     # Embedders
     "Embedder",
+    "EmbeddingLRUCache",
     "HashingEmbedder",
     "SentenceTransformerEmbedder",
     "GeminiClient",
     "GeminiEmbedder",
     "GeminiAPIError",
+    # Guard
+    "check_match",
+    "GuardResult",
+    "GuardVerdict",
+    "normalize_text",
     # Helpers
     "validate_embedding",
     "is_zero_vector",
