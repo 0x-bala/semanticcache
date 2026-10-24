@@ -25,6 +25,7 @@ from .embedders import (
     is_zero_vector,
     validate_embedding,
 )
+from .gemini import GeminiAPIError, GeminiClient, GeminiEmbedder
 from .protocols import CacheStore
 from .store import SQLiteStore
 
@@ -43,6 +44,9 @@ __all__ = [
     "Embedder",
     "HashingEmbedder",
     "SentenceTransformerEmbedder",
+    "GeminiClient",
+    "GeminiEmbedder",
+    "GeminiAPIError",
     # Helpers
     "validate_embedding",
     "is_zero_vector",

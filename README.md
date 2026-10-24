@@ -85,6 +85,26 @@ SQLite is suitable for a single process or local deployment. The public
 multi-instance deployments. Use encryption, access controls, and retention
 policies appropriate to the cached data.
 
+## Gemini quick start
+
+Store `GEMINI_API_KEY` in your environment, then use Gemini for both answer
+generation and semantic embeddings. The key is read at runtime and is never
+stored by this package.
+
+```python
+from semantic_cache import GeminiClient, GeminiEmbedder, SemanticCache
+
+cache = SemanticCache(embedder=GeminiEmbedder(), threshold=0.95, ttl=300)
+gemini = GeminiClient(model="gemini-2.5-flash")
+
+result = cache.get_or_compute(
+    "How do I reset my password?",
+    gemini.generate,
+    namespace="support-v1",
+)
+print(result.response)
+```
+
 ---
 
 ## Architecture

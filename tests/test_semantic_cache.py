@@ -29,6 +29,7 @@ from semantic_cache.embedders import (
 from semantic_cache.store import SQLiteStore
 from semantic_cache.cache import SemanticCache, Stats, CacheResult
 from semantic_cache.context import CacheContext
+from semantic_cache.gemini import GeminiClient, GeminiEmbedder
 
 
 # ===========================================================================
@@ -207,6 +208,26 @@ class TestCacheContext:
         assert CacheContext(**base).namespace() != CacheContext(
             **(base | {"retrieval_version": "corpus-v2"})
         ).namespace()
+
+
+class TestGeminiAdapters:
+
+    def test_gemini_client_extracts_text_without_network(self):
+        client = GeminiClient(api_key="test-key")
+        client._request = lambda method, payload: {
+            "candidates": [{"content": {"parts": [{"text": "hello"}, {"text": " world"}]}}]
+        }
+
+        assert client.generate("test") == "hello world"
+
+    def test_gemini_embedder_returns_normalized_vector_without_network(self):
+        embedder = GeminiEmbedder(api_key="test-key")
+        embedder._request = lambda method, payload: {"embedding": {"values": [3.0, 4.0]}}
+
+        vector = embedder.embed("test")
+
+        assert vector.dtype == np.float32
+        assert abs(float(np.linalg.norm(vector)) - 1.0) < 1e-6
 
 
 # ===========================================================================
