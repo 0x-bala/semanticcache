@@ -209,8 +209,10 @@ class SQLiteStore:
         self._max_entries = max_entries
         self._lock = threading.Lock()
 
-        self.db = sqlite3.connect(path, check_same_thread=False)
-        self.db.execute("PRAGMA journal_mode=WAL")
+        # A generous busy timeout lets concurrent processes queue for write locks
+        # (for example two app instances starting against the same cache file).
+        self.db = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
+        self._enable_wal()
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute(
             """CREATE TABLE IF NOT EXISTS entries (
@@ -244,6 +246,31 @@ class SQLiteStore:
 
         # index_key -> VectorIndex
         self._index: dict[str, VectorIndex] = {}
+
+    def _enable_wal(self) -> None:
+        """Switch the database to WAL mode without racing other processes.
+
+        Changing ``journal_mode`` needs an exclusive lock, and SQLite may raise
+        "database is locked" immediately instead of waiting for the busy timeout
+        when another process is opening the same file.  WAL mode is persistent, so
+        we first check whether it is already on, and retry briefly otherwise.  WAL
+        is only a performance optimization: if it cannot be enabled, the default
+        journal mode is kept and the store still works.
+        """
+        if self._path == ":memory:":
+            return
+        for attempt in range(40):
+            try:
+                mode = self.db.execute("PRAGMA journal_mode").fetchone()[0]
+                if str(mode).lower() != "wal":
+                    self.db.execute("PRAGMA journal_mode=WAL")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                time.sleep(0.05 * (1 + attempt % 5))
+        logger.warning("Could not enable WAL mode (database busy); using the default journal mode")
 
     def _run_safe_migration(self) -> None:
         """Run schema migration with transactional concurrency lock via BEGIN IMMEDIATE.
