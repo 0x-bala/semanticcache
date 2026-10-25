@@ -289,6 +289,75 @@ cache.async_get_or_compute_stream(query, fn)     # Async stream generator
 
 ---
 
+## Measured results (and honest limits)
+
+All numbers below come from `benchmarks/` and are stored in `benchmarks/results_real.json`.
+Embeddings are real (`all-MiniLM-L6-v2`, 384 dimensions); nothing here is synthetic.
+
+### Speed at 100,000 cached entries
+
+| | Brute force (NumPy) | FAISS HNSW |
+|---|---|---|
+| Exact repeat (p50) | 0.005 ms | 0.005 ms |
+| Semantic lookup (p50 / p99) | 3.58 ms / 4.10 ms | 0.20 ms / 0.34 ms |
+| Miss (p50) | 3.53 ms | 0.34 ms |
+| Index build | 10.7 s | 29.6 s |
+| Memory (RSS) | 1.13 GB | 1.53 GB |
+| FAISS recall@1 / recall@5 vs brute force | n/a | 98.1% / 98.3% |
+| Insert past capacity, mean / worst | 0.22 ms / 159 ms | 0.46 ms / 174 ms |
+
+FAISS is about 18x faster for semantic lookups at this size, at the cost of memory and
+a small recall loss. Exact repeats are served from a hash table at any size. Below
+roughly 10,000 entries brute force is fast enough and needs no extra dependency.
+
+### Accuracy on real labeled pairs (Quora Question Pairs, threshold 0.85)
+
+1,000 true duplicate pairs and 1,000 non-duplicate pairs, decided by the real
+`SemanticCache.get()`:
+
+| Setting | Duplicates served (recall) | Wrong answers served (per 1,000 non-duplicates) |
+|---|---|---|
+| Similarity only (`guard=False`) | 64.0% | 14.7% |
+| Guard on, defaults (no verifier) | 7.8% | 0.8% |
+| Guard on, `verify_always=False` (less strict) | 21.1% | 2.8% |
+
+What this means:
+
+- The guard cuts wrong answers by roughly 18x compared with pure similarity.
+- Without a verifier, ambiguous matches (the guard's `VERIFY` verdict) are treated as
+  misses. On loose paraphrases that is most of them, so recall is low. Configure a
+  `verifier` (for example `GeminiVerifier`) to recover them.
+- QQP is a hard, loosely labeled benchmark: some "non-duplicates" are real paraphrases.
+  Traffic where users repeat the same questions will hit far more often.
+
+### Not yet measured
+
+- Accuracy and recall **with** a verifier (live Gemini quota was exhausted; the local
+  cross-encoder is uncalibrated).
+- `estimated_false_hit_rate` against ground truth with a semantic comparator. A test with
+  an exact-string comparator overestimated (45% vs 16% true), so use a semantic comparator.
+- A head-to-head against GPTCache or other caches.
+- hnswlib at scale (it needs a C++ compiler on Windows). A small correctness test runs
+  only when hnswlib is installed.
+
+### Known limits
+
+- Single process: each process keeps its own in-memory index and does not see another
+  process's new writes until it reloads.
+- Writes are batched (about 50 ms) and flushed on exit; a hard kill can lose the last few
+  writes. Use `SQLiteStore(batch_writes=False)` for immediate durability.
+- Brute-force search is exact but grows linearly with entries.
+
+### Reproduce
+
+```bash
+python tests/benchmark.py                          # offline speed, no key needed
+python benchmarks/real_embeddings.py --part 12     # real-embedding speed + accuracy
+python benchmarks/guard_rules.py                   # which guard rules block what
+```
+
+---
+
 ## Verification & Testing Transparency
 
 To ensure complete honesty and clarity regarding performance and testing, here is the breakdown of what has been verified with live external APIs versus offline mocks:
