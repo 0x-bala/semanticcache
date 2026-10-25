@@ -1037,6 +1037,7 @@ class TestVerifierWithCache:
     not os.environ.get("GEMINI_API_KEY"),
     reason="GEMINI_API_KEY not set",
 )
+@pytest.mark.live
 class TestGeminiEmbedderLive:
     """Live integration tests for GeminiEmbedder with output_dimensionality."""
 

@@ -39,6 +39,9 @@ include = ["semantic_cache*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "live: tests that make real network/API calls (opt-in)",
+]
 
 [tool.ruff]
 line-length = 100

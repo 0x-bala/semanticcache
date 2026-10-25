@@ -1,6 +1,6 @@
 {
   "system": {
-    "date": "2026-10-25 03:49:07 UTC",
+    "date": "2026-10-25 05:38:31 UTC",
     "python_version": "3.13.14",
     "os": "Windows-11-10.0.26300-SP0",
     "cpu_count": 12,
@@ -24,48 +24,48 @@
     "configurations": {
       "brute_force": {
         "status": "COMPLETED",
-        "build_time_seconds": 17.38,
-        "rss_mb": 1070.22,
+        "build_time_seconds": 10.69,
+        "rss_mb": 1130.31,
         "exact_hit": {
-          "p50_ms": 0.0057,
-          "p95_ms": 0.0116,
-          "p99_ms": 0.0224,
-          "mean_ms": 0.0068
+          "p50_ms": 0.0048,
+          "p95_ms": 0.0073,
+          "p99_ms": 0.0094,
+          "mean_ms": 0.0052
         },
         "semantic_hit": {
-          "p50_ms": 4.4689,
-          "p95_ms": 5.089,
-          "p99_ms": 5.8358,
-          "mean_ms": 4.5535
+          "p50_ms": 3.5778,
+          "p95_ms": 3.8744,
+          "p99_ms": 4.1016,
+          "mean_ms": 3.6074
         },
         "miss": {
-          "p50_ms": 4.5179,
-          "p95_ms": 6.1463,
-          "p99_ms": 7.2792,
-          "mean_ms": 4.6982
+          "p50_ms": 3.534,
+          "p95_ms": 3.8199,
+          "p99_ms": 4.0625,
+          "mean_ms": 3.5632
         }
       },
       "faiss": {
         "status": "COMPLETED",
-        "build_time_seconds": 40.68,
-        "rss_mb": 1273.62,
+        "build_time_seconds": 29.62,
+        "rss_mb": 1526.59,
         "exact_hit": {
-          "p50_ms": 0.0084,
-          "p95_ms": 0.0138,
-          "p99_ms": 0.0309,
-          "mean_ms": 0.0091
+          "p50_ms": 0.0048,
+          "p95_ms": 0.0072,
+          "p99_ms": 0.0138,
+          "mean_ms": 0.0052
         },
         "semantic_hit": {
-          "p50_ms": 0.2807,
-          "p95_ms": 0.4673,
-          "p99_ms": 0.6382,
-          "mean_ms": 0.3036
+          "p50_ms": 0.2023,
+          "p95_ms": 0.3054,
+          "p99_ms": 0.3439,
+          "mean_ms": 0.21
         },
         "miss": {
-          "p50_ms": 0.462,
-          "p95_ms": 0.7692,
-          "p99_ms": 0.9177,
-          "mean_ms": 0.4899
+          "p50_ms": 0.3405,
+          "p95_ms": 0.4573,
+          "p99_ms": 0.5376,
+          "mean_ms": 0.3475
         }
       },
       "hnswlib": {
@@ -82,30 +82,30 @@
     },
     "eviction": {
       "brute_force": {
-        "mean_insert_ms": 0.3168,
-        "max_insert_ms": 228.7946,
-        "p95_insert_ms": 0.1258,
-        "p99_insert_ms": 1.2993
+        "mean_insert_ms": 0.2163,
+        "max_insert_ms": 159.1418,
+        "p95_insert_ms": 0.0789,
+        "p99_insert_ms": 0.6496
       },
       "faiss": {
-        "mean_insert_ms": 9.312,
-        "max_insert_ms": 8673.6131,
-        "p95_insert_ms": 1.0786,
-        "p99_insert_ms": 2.2482
+        "mean_insert_ms": 0.4593,
+        "max_insert_ms": 173.6184,
+        "p95_insert_ms": 0.4048,
+        "p99_insert_ms": 1.0378
       }
     },
     "throughput": {
       "batch_writes_True": {
         "inserts": 2000,
-        "elapsed_seconds": 0.0961,
-        "ops_per_second": 20814.3,
-        "avg_ms_per_insert": 0.048
+        "elapsed_seconds": 0.0496,
+        "ops_per_second": 40337.8,
+        "avg_ms_per_insert": 0.0248
       },
       "batch_writes_False": {
         "inserts": 2000,
-        "elapsed_seconds": 0.105,
-        "ops_per_second": 19051.5,
-        "avg_ms_per_insert": 0.0525
+        "elapsed_seconds": 0.0542,
+        "ops_per_second": 36871.8,
+        "avg_ms_per_insert": 0.0271
       }
     }
   },
@@ -271,58 +271,6 @@
         "false_hit_rate": 0.006,
         "precision": 0.9368,
         "f1": 0.1626
-      },
-      "guard_on_verifier_thresh_80": {
-        "config": "guard_on_verifier",
-        "threshold": 0.8,
-        "guard_enabled": true,
-        "true_duplicates_total": 1000,
-        "true_hits": 83,
-        "recall": 0.083,
-        "non_duplicates_total": 1000,
-        "wrong_hits": 11,
-        "false_hit_rate": 0.011,
-        "precision": 0.883,
-        "f1": 0.1517
-      },
-      "guard_on_verifier_thresh_85": {
-        "config": "guard_on_verifier",
-        "threshold": 0.85,
-        "guard_enabled": true,
-        "true_duplicates_total": 1000,
-        "true_hits": 83,
-        "recall": 0.083,
-        "non_duplicates_total": 1000,
-        "wrong_hits": 11,
-        "false_hit_rate": 0.011,
-        "precision": 0.883,
-        "f1": 0.1517
-      },
-      "guard_on_verifier_thresh_90": {
-        "config": "guard_on_verifier",
-        "threshold": 0.9,
-        "guard_enabled": true,
-        "true_duplicates_total": 1000,
-        "true_hits": 81,
-        "recall": 0.081,
-        "non_duplicates_total": 1000,
-        "wrong_hits": 8,
-        "false_hit_rate": 0.008,
-        "precision": 0.9101,
-        "f1": 0.1488
-      },
-      "guard_on_verifier_thresh_95": {
-        "config": "guard_on_verifier",
-        "threshold": 0.95,
-        "guard_enabled": true,
-        "true_duplicates_total": 1000,
-        "true_hits": 73,
-        "recall": 0.073,
-        "non_duplicates_total": 1000,
-        "wrong_hits": 5,
-        "false_hit_rate": 0.005,
-        "precision": 0.9359,
-        "f1": 0.1354
       }
     },
     "worst_20_wrong_hits_at_0.85": {
@@ -688,85 +636,6 @@
           "guard_verdict": "VERIFY",
           "ground_truth": 0
         }
-      ],
-      "guard_on_verifier": [
-        {
-          "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
-          "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
-          "score": 1.0,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "Which fruits and vegetables help to increase the blood?",
-          "matched_question": "Which fruits and vegetables help to increase the blood?",
-          "score": 1.0,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "Is timetravel possible?",
-          "matched_question": "Is timetravel possible?",
-          "score": 1.0,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "What are indicators of a chemical change?",
-          "matched_question": "What are the indicators of a chemical change?",
-          "score": 0.9936,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "How do you reset your Yahoo! password?",
-          "matched_question": "How do you reset your Yahoo password?",
-          "score": 0.9553,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "What is the biggest achievement of your life?",
-          "matched_question": "What is the biggest achievement in life?",
-          "score": 0.9474,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "What does \"grit\" mean?",
-          "matched_question": "What is grit?",
-          "score": 0.9306,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "Can you sign a document on behalf of someone else?",
-          "matched_question": "How do I sign a document on behalf of someone else?",
-          "score": 0.9245,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "Why do we celebrate mother's day?",
-          "matched_question": "Should we celebrate Mother's Day?",
-          "score": 0.8768,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "How is CGPA calculated for BE?",
-          "matched_question": "How will my CGPA be calculated?",
-          "score": 0.8698,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "How can I predict my future?",
-          "matched_question": "Can you predict my future?",
-          "score": 0.8583,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        }
       ]
     },
     "note": "Decisions come from SemanticCache.get(). 'guard_on' uses library defaults (VERIFY without a verifier is a miss); 'guard_on_legacy' reproduces the old benchmark policy (verify_always=False)."
@@ -792,7 +661,7 @@
     "pairs_tested": 15,
     "accept_rate_true_duplicates": 0.0,
     "accept_rate_non_duplicates": null,
-    "average_latency_ms": 673.51,
+    "average_latency_ms": 631.22,
     "false_accepts_count": 0,
     "false_accepts": [],
     "quota_details": null,
