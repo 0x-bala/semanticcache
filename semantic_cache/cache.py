@@ -72,6 +72,12 @@ def _validate_threshold(value: float) -> float:
     return float(value)
 
 
+def _validate_query(query: str) -> str:
+    if not isinstance(query, str):
+        raise TypeError(f"query must be a string, got {type(query).__name__}")
+    return query
+
+
 def _validate_namespace(ns: str) -> str:
     if not isinstance(ns, str) or not ns:
         raise ValueError("namespace must be a non-empty string")
@@ -547,6 +553,7 @@ class SemanticCache:
         verify_always:
             Per-call toggle for whether VERIFY rules apply at all scores.
         """
+        _validate_query(query)
         if not self.enabled or bypass:
             return None
 
@@ -745,6 +752,7 @@ class SemanticCache:
             The time (seconds) it took to compute *response*.  Used to estimate
             ``stats.seconds_saved`` on future hits.
         """
+        _validate_query(query)
         if not self.enabled or is_time_sensitive_query(query):
             return
 
@@ -816,6 +824,7 @@ class SemanticCache:
         - **No caching of failed results**: only successful, non-empty strings
           are stored.
         """
+        _validate_query(query)
         ns = _validate_namespace(namespace or self.namespace)
 
         if bypass or not self.enabled:
