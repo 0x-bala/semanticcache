@@ -1251,47 +1251,53 @@ def cached(
     def decorator(fn: Callable) -> Callable:
         target_cache = cache if cache is not None else _get_default_cache()
 
+        try:
+            _params = list(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            _params = []
+        _skip_first = bool(_params) and _params[0] in ("self", "cls")
+
         def extract_query(
             args: tuple[Any, ...], kwargs: dict[str, Any]
-        ) -> tuple[str, bool, dict[str, Any]]:
+        ) -> tuple[str, bool, dict[str, Any], str | None]:
+            """Return (query, bypass, call_kwargs, namespace).
+
+            Every argument other than the prompt (model, temperature, ...) is folded
+            into the namespace so calls that differ only in those arguments can never
+            share a cached answer.
+            """
             call_kwargs = dict(kwargs)
             bypass = bool(call_kwargs.pop("bypass", False))
             if key_fn is not None:
-                q = key_fn(*args, **call_kwargs)
-            elif "prompt" in call_kwargs:
-                q = str(call_kwargs["prompt"])
-            elif "query" in call_kwargs:
-                q = str(call_kwargs["query"])
-            elif args:
-                q = str(args[0])
+                q = str(key_fn(*args, **call_kwargs))
+                extras: list[Any] = []
             else:
-                raise ValueError("Could not extract query string for @cached function")
-            return q, bypass, call_kwargs
+                pos = list(args[1:] if _skip_first else args)
+                rest = dict(call_kwargs)
+                if "prompt" in rest:
+                    q = str(rest.pop("prompt"))
+                elif "query" in rest:
+                    q = str(rest.pop("query"))
+                elif pos:
+                    q = str(pos.pop(0))
+                else:
+                    raise ValueError("Could not extract query string for @cached function")
+                extras = [pos, sorted(rest.items())]
+            ns = namespace
+            if extras and (extras[0] or extras[1]):
+                digest = hashlib.sha256(repr(extras).encode("utf-8")).hexdigest()[:16]
+                ns = f"{namespace or target_cache.namespace}:{digest}"
+            return q, bypass, call_kwargs, ns
 
         if inspect.iscoroutinefunction(fn):
+
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                q, bypass, call_kwargs = extract_query(args, kwargs)
+                q, bypass, call_kwargs, ns = extract_query(args, kwargs)
                 res = await target_cache.async_get_or_compute(
                     q,
                     lambda _: fn(*args, **call_kwargs),
-                    namespace=namespace,
-                    bypass=bypass,
-                    threshold=threshold,
-                    guard=guard,
-                    verify_always=verify_always,
-                )
-                return res.response
-
-            return async_wrapper
-        else:
-            @functools.wraps(fn)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                q, bypass, call_kwargs = extract_query(args, kwargs)
-                res = target_cache.get_or_compute(
-                    q,
-                    lambda _: fn(*args, **call_kwargs),
-                    namespace=namespace,
+                    namespace=ns,
                     ttl=ttl,
                     bypass=bypass,
                     threshold=threshold,
@@ -1300,7 +1306,24 @@ def cached(
                 )
                 return res.response
 
-            return sync_wrapper
+            return async_wrapper
+
+        @functools.wraps(fn)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            q, bypass, call_kwargs, ns = extract_query(args, kwargs)
+            res = target_cache.get_or_compute(
+                q,
+                lambda _: fn(*args, **call_kwargs),
+                namespace=ns,
+                ttl=ttl,
+                bypass=bypass,
+                threshold=threshold,
+                guard=guard,
+                verify_always=verify_always,
+            )
+            return res.response
+
+        return sync_wrapper
 
     # If called without arguments: @cached
     if callable(cache):

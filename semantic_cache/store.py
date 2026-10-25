@@ -20,11 +20,13 @@ Concurrency:
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import logging
 import sqlite3
 import threading
 import time
+import weakref
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -97,6 +99,16 @@ def _safe_load_blob(blob: bytes, expected_dim: int) -> np.ndarray | None:
         return None
 
 
+def _flush_store_at_exit(ref: weakref.ReferenceType) -> None:
+    """Flush queued writes on normal interpreter exit (stores are often never closed)."""
+    store = ref()
+    if store is not None:
+        try:
+            store.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # ---------------------------------------------------------------------------
 # VectorIndex with optional ANN backend (FAISS / hnswlib)
 # ---------------------------------------------------------------------------
@@ -125,6 +137,7 @@ def _build_ann_index(dim: int, matrix: np.ndarray, backend: str | None = None) -
             index = hnswlib.Index(space="cosine", dim=dim)
             count = matrix.shape[0]
             index.init_index(max_elements=max(1000, count * 2), ef_construction=100, M=16)
+            index.set_ef(64)
             if count > 0:
                 index.add_items(matrix, np.arange(count))
             return index
@@ -212,8 +225,15 @@ class VectorIndex:
                 self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
             else:
                 try:
-                    if hasattr(self.ann_index, "add"):
-                        self.ann_index.add(flat_vec.reshape(1, -1).astype(np.float32))
+                    vec32 = flat_vec.reshape(1, -1).astype(np.float32)
+                    if hasattr(self.ann_index, "add_items"):  # hnswlib
+                        if self.count > self.ann_index.get_max_elements():
+                            self.ann_index.resize_index(self.count * 2)
+                        self.ann_index.add_items(vec32, np.array([self.count - 1]))
+                    elif hasattr(self.ann_index, "add"):  # faiss
+                        self.ann_index.add(vec32)
+                    else:
+                        self.ann_index = None
                 except Exception:
                     self.ann_index = None
 
@@ -255,7 +275,11 @@ class VectorIndex:
         if self.ann_index is not None and self.count >= self.ann_threshold:
             try:
                 q = query_vec.reshape(1, -1).astype(np.float32)
-                scores, indices = self.ann_index.search(q, top_k)
+                if hasattr(self.ann_index, "knn_query"):  # hnswlib (cosine distance)
+                    labels, dists = self.ann_index.knn_query(q, k=min(top_k, self.count))
+                    indices, scores = labels, 1.0 - dists
+                else:  # faiss (inner product)
+                    scores, indices = self.ann_index.search(q, top_k)
                 res_ids: list[int] = []
                 res_scores: list[float] = []
                 for idx, score in zip(indices[0], scores[0]):
@@ -356,7 +380,7 @@ class SQLiteStore:
         self._lock = threading.RLock()
         self._flushing = False
         self._uncommitted_writes = 0
-        self._pending_hits: dict[int, float] = {}
+        self._pending_hits: dict[int, tuple[int, float]] = {}
 
         # A generous busy timeout lets concurrent processes queue for write locks
         # (for example two app instances starting against the same cache file).
@@ -423,6 +447,7 @@ class SQLiteStore:
                 daemon=True,
             )
             self._writer_thread.start()
+            atexit.register(_flush_store_at_exit, weakref.ref(self))
 
     def _writer_loop(self) -> None:
         while not self._stop_event.wait(0.05):
@@ -442,8 +467,8 @@ class SQLiteStore:
                 self._pending_hits.clear()
                 if self._raw_db is not None:
                     self._raw_db.executemany(
-                        "UPDATE entries SET hits = hits + 1, last_hit_at = ? WHERE id = ?",
-                        [(ts, eid) for eid, ts in hits_to_flush],
+                        "UPDATE entries SET hits = hits + ?, last_hit_at = ? WHERE id = ?",
+                        [(count, ts, eid) for eid, (count, ts) in hits_to_flush],
                     )
             if (self._uncommitted_writes > 0 or hits_to_flush) and self._raw_db is not None:
                 self._raw_db.commit()
@@ -626,12 +651,12 @@ class SQLiteStore:
                     self._index[ikey].append(entry_id, embedding)
 
             if self._max_entries is not None:
-                self._evict_if_needed()
+                self._evict_if_needed(protect_id=entry_id)
 
         logger.debug("cache.add namespace=%r id=%d", namespace, entry_id)
         return entry_id
 
-    def _evict_if_needed(self) -> None:
+    def _evict_if_needed(self, protect_id: int | None = None) -> None:
         """Batch-evict entries according to eviction policy down to 90% capacity."""
         self.flush()
         total = self._raw_db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
@@ -646,11 +671,14 @@ class SQLiteStore:
             else:  # lru
                 order_by = "COALESCE(last_hit_at, created_at) ASC"
 
+            # Never evict the entry that was just inserted, otherwise LFU (0 hits)
+            # would drop every new entry immediately once the others have hits.
             cur = self._raw_db.execute(
                 f"""SELECT id FROM entries
+                   WHERE id != ?
                    ORDER BY {order_by}
                    LIMIT ?""",
-                (entries_to_evict,),
+                (-1 if protect_id is None else protect_id, entries_to_evict),
             )
             evicted_ids = [row[0] for row in cur.fetchall()]
             if evicted_ids:
@@ -860,7 +888,8 @@ class SQLiteStore:
                 entry.hits += 1
                 entry.last_hit_at = now
             if self._batch_writes:
-                self._pending_hits[entry_id] = now
+                prev = self._pending_hits.get(entry_id, (0, now))[0]
+                self._pending_hits[entry_id] = (prev + 1, now)
             else:
                 self._raw_db.execute(
                     "UPDATE entries SET hits = hits + 1, last_hit_at = ? WHERE id = ?",
