@@ -91,3 +91,43 @@ def test_ann_eviction_filters_without_rebuilding_until_threshold(backend):
     assert index.ann_ids == index.ids
     ids, _ = index.search(vecs[150], top_k=1)
     assert ids == [150]
+
+
+@pytest.mark.parametrize(
+    "new,cached",
+    [
+        ("How can I predict my future?", "Can you predict my future?"),
+        (
+            "Can you sign a document on behalf of someone else?",
+            "How do I sign a document on behalf of someone else?",
+        ),
+        ("Why do we celebrate mother's day?", "Should we celebrate Mother's Day?"),
+        ("Can I take this medicine?", "Should I take this medicine?"),
+    ],
+)
+def test_different_question_frames_must_be_verified(new, cached):
+    result = check_match(new, cached)
+    assert result.verdict == GuardVerdict.VERIFY
+    assert result.must_verify is True
+
+
+def test_quoted_phrases_must_match_when_both_sides_quote():
+    result = check_match(
+        'What is the difference between "on time" and "in time"?',
+        'What is the difference between "Do you have time" and "Do you have the time?"',
+    )
+    assert result.verdict == GuardVerdict.REJECT
+    assert "Quoted text" in result.reason
+
+
+@pytest.mark.parametrize(
+    "new,cached",
+    [
+        ("How do I cook rice?", "How can I cook rice?"),
+        ("Can I swim here?", "Could I swim here?"),
+        ('What does "grit" mean?', "What is grit?"),
+        ('What is "grit"?', 'what is "Grit"'),
+    ],
+)
+def test_same_frame_and_one_sided_quotes_are_not_blocked(new, cached):
+    assert check_match(new, cached).verdict == GuardVerdict.ACCEPT

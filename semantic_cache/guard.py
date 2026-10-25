@@ -200,6 +200,39 @@ QUESTION_INTENT_WORDS: set[str] = {
     "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
 }
 
+# Leading auxiliaries/modals turn a question into a yes/no or advice question.
+# Groups are interchangeable inside, but not across ("Can I ..." != "Should I ...").
+YESNO_GROUPS: dict[str, str] = {
+    **dict.fromkeys(("can", "could", "may", "might"), "ability"),
+    **dict.fromkeys(("should", "ought"), "advice"),
+    **dict.fromkeys(("will", "would", "shall"), "future"),
+    "must": "obligation",
+    **dict.fromkeys(("do", "does", "did"), "do"),
+    **dict.fromkeys(("is", "are", "was", "were", "am"), "be"),
+    **dict.fromkeys(("has", "have", "had"), "have"),
+}
+
+_QUOTED_RE = re.compile(r"[\"\u201c\u201d]([^\"\u201c\u201d]{1,200})[\"\u201c\u201d]")
+
+
+def _quoted_spans(text: str) -> list[str]:
+    """Normalised double-quoted spans, e.g. the two phrases in 'difference between "a" and "b"'."""
+    return sorted(
+        " ".join(re.findall(r"\w+", m.lower())) for m in _QUOTED_RE.findall(text) if m.strip()
+    )
+
+
+def _question_frame(tokens: list[str]) -> str | None:
+    """Kind of question from the first word: a wh-word, a yes/no group, or None."""
+    if not tokens:
+        return None
+    first = tokens[0]
+    if first in QUESTION_INTENT_WORDS:
+        return first
+    group = YESNO_GROUPS.get(first)
+    return f"yesno:{group}" if group else None
+
+
 DEFAULT_STOPWORDS: set[str] = {
     "a", "an", "the",
     "is", "are", "was", "were", "be", "been", "being",
@@ -596,6 +629,16 @@ def check_match(
     if _significant_symbols(new_query) != _significant_symbols(cached_query):
         return GuardResult(GuardVerdict.REJECT, "Significant symbols or operators differ")
 
+    # When both sides quote something, the quoted phrases must be the same; stopword-only
+    # differences inside quotes ("on time" vs "in time") change the meaning.
+    quotes_new = _quoted_spans(new_query)
+    quotes_cached = _quoted_spans(cached_query)
+    if quotes_new and quotes_cached and quotes_new != quotes_cached:
+        return GuardResult(
+            GuardVerdict.REJECT,
+            f"Quoted text differs: {quotes_new} vs {quotes_cached}",
+        )
+
     norm_new = normalize_text(new_query)
     norm_cached = normalize_text(cached_query)
 
@@ -619,6 +662,17 @@ def check_match(
         return GuardResult(
             GuardVerdict.REJECT,
             f"Question intent differs: {question_new!r} vs {question_cached!r}",
+        )
+
+    # "Can you ...", "Should we ..." and "How do I ..." ask for different things even when
+    # the remaining words match. Only compare frames when both queries open with one.
+    frame_new = _question_frame(tokens_new)
+    frame_cached = _question_frame(tokens_cached)
+    if frame_new is not None and frame_cached is not None and frame_new != frame_cached:
+        return GuardResult(
+            GuardVerdict.VERIFY,
+            f"Question frame differs: {frame_new!r} vs {frame_cached!r}",
+            must_verify=True,
         )
 
     # Ordered number/unit facts catch swapped values and permit only explicit,
