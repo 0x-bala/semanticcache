@@ -1,0 +1,112 @@
+{
+  "system": {
+    "date": "2026-10-25 02:57:25 UTC",
+    "python_version": "3.13.14",
+    "os": "Windows-11-10.0.26300-SP0",
+    "cpu_count": 12,
+    "ram_gb": 15.74,
+    "primary_embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "primary_dimensionality": 384,
+    "api_embedding_model": "gemini-embedding-001 (768 dims)",
+    "verifier_model": "gemini-2.5-flash",
+    "dataset": "GLUE QQP (Quora Question Pairs)"
+  },
+  "part1_speed_100k": {
+    "metadata": {
+      "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+      "dimensionality": 384,
+      "corpus_count": 100000,
+      "corpus_type": "100% REAL QQP QUESTIONS (NO SYNTHETIC VECTORS)",
+      "query_count": 2000,
+      "corpus_embed_time_seconds": 0.0,
+      "avg_query_embed_latency_ms": 0.98
+    },
+    "configurations": {
+      "brute_force": {
+        "status": "COMPLETED",
+        "build_time_seconds": 17.38,
+        "rss_mb": 1070.22,
+        "exact_hit": {
+          "p50_ms": 0.0057,
+          "p95_ms": 0.0116,
+          "p99_ms": 0.0224,
+          "mean_ms": 0.0068
+        },
+        "semantic_hit": {
+          "p50_ms": 4.4689,
+          "p95_ms": 5.089,
+          "p99_ms": 5.8358,
+          "mean_ms": 4.5535
+        },
+        "miss": {
+          "p50_ms": 4.5179,
+          "p95_ms": 6.1463,
+          "p99_ms": 7.2792,
+          "mean_ms": 4.6982
+        }
+      },
+      "faiss": {
+        "status": "COMPLETED",
+        "build_time_seconds": 40.68,
+        "rss_mb": 1273.62,
+        "exact_hit": {
+          "p50_ms": 0.0084,
+          "p95_ms": 0.0138,
+          "p99_ms": 0.0309,
+          "mean_ms": 0.0091
+        },
+        "semantic_hit": {
+          "p50_ms": 0.2807,
+          "p95_ms": 0.4673,
+          "p99_ms": 0.6382,
+          "mean_ms": 0.3036
+        },
+        "miss": {
+          "p50_ms": 0.462,
+          "p95_ms": 0.7692,
+          "p99_ms": 0.9177,
+          "mean_ms": 0.4899
+        }
+      },
+      "hnswlib": {
+        "status": "SKIPPED",
+        "reason": "hnswlib compilation requires MSVC C++ tools on Windows Python 3.13"
+      }
+    },
+    "recall": {
+      "faiss": {
+        "queries_evaluated": 1000,
+        "recall_at_1": 0.981,
+        "recall_at_5": 0.983
+      }
+    },
+    "eviction": {
+      "brute_force": {
+        "mean_insert_ms": 0.3168,
+        "max_insert_ms": 228.7946,
+        "p95_insert_ms": 0.1258,
+        "p99_insert_ms": 1.2993
+      },
+      "faiss": {
+        "mean_insert_ms": 9.312,
+        "max_insert_ms": 8673.6131,
+        "p95_insert_ms": 1.0786,
+        "p99_insert_ms": 2.2482
+      }
+    },
+    "throughput": {
+      "batch_writes_True": {
+        "inserts": 2000,
+        "elapsed_seconds": 0.0961,
+        "ops_per_second": 20814.3,
+        "avg_ms_per_insert": 0.048
+      },
+      "batch_writes_False": {
+        "inserts": 2000,
+        "elapsed_seconds": 0.105,
+        "ops_per_second": 19051.5,
+        "avg_ms_per_insert": 0.0525
+      }
+    }
+  }
+}
