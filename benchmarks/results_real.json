@@ -1,6 +1,6 @@
 {
   "system": {
-    "date": "2026-10-25 06:42:54 UTC",
+    "date": "2026-10-25 06:54:08 UTC",
     "python_version": "3.13.14",
     "os": "Windows-11-10.0.26300-SP0",
     "cpu_count": 12,
@@ -111,9 +111,9 @@
   },
   "part2_accuracy_real_pairs": {
     "guard_duplicate_verdict_counts": {
-      "ACCEPT": 60,
-      "VERIFY": 582,
-      "REJECT": 358
+      "ACCEPT": 56,
+      "VERIFY": 608,
+      "REJECT": 336
     },
     "settings": {
       "guard_off_thresh_80": {
@@ -173,39 +173,39 @@
         "threshold": 0.8,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 83,
-        "recall": 0.083,
+        "true_hits": 78,
+        "recall": 0.078,
         "non_duplicates_total": 1000,
-        "wrong_hits": 11,
-        "false_hit_rate": 0.011,
-        "precision": 0.883,
-        "f1": 0.1517
+        "wrong_hits": 8,
+        "false_hit_rate": 0.008,
+        "precision": 0.907,
+        "f1": 0.1436
       },
       "guard_on_thresh_85": {
         "config": "guard_on",
         "threshold": 0.85,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 83,
-        "recall": 0.083,
+        "true_hits": 78,
+        "recall": 0.078,
         "non_duplicates_total": 1000,
-        "wrong_hits": 11,
-        "false_hit_rate": 0.011,
-        "precision": 0.883,
-        "f1": 0.1517
+        "wrong_hits": 8,
+        "false_hit_rate": 0.008,
+        "precision": 0.907,
+        "f1": 0.1436
       },
       "guard_on_thresh_90": {
         "config": "guard_on",
         "threshold": 0.9,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 81,
-        "recall": 0.081,
+        "true_hits": 76,
+        "recall": 0.076,
         "non_duplicates_total": 1000,
-        "wrong_hits": 8,
-        "false_hit_rate": 0.008,
-        "precision": 0.9101,
-        "f1": 0.1488
+        "wrong_hits": 7,
+        "false_hit_rate": 0.007,
+        "precision": 0.9157,
+        "f1": 0.1404
       },
       "guard_on_thresh_95": {
         "config": "guard_on",
@@ -225,39 +225,39 @@
         "threshold": 0.8,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 280,
-        "recall": 0.28,
+        "true_hits": 250,
+        "recall": 0.25,
         "non_duplicates_total": 1000,
-        "wrong_hits": 48,
-        "false_hit_rate": 0.048,
-        "precision": 0.8537,
-        "f1": 0.4217
+        "wrong_hits": 41,
+        "false_hit_rate": 0.041,
+        "precision": 0.8591,
+        "f1": 0.3873
       },
       "guard_on_legacy_thresh_85": {
         "config": "guard_on_legacy",
         "threshold": 0.85,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 230,
-        "recall": 0.23,
+        "true_hits": 211,
+        "recall": 0.211,
         "non_duplicates_total": 1000,
-        "wrong_hits": 32,
-        "false_hit_rate": 0.032,
-        "precision": 0.8779,
-        "f1": 0.3645
+        "wrong_hits": 28,
+        "false_hit_rate": 0.028,
+        "precision": 0.8828,
+        "f1": 0.3406
       },
       "guard_on_legacy_thresh_90": {
         "config": "guard_on_legacy",
         "threshold": 0.9,
         "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 158,
-        "recall": 0.158,
+        "true_hits": 147,
+        "recall": 0.147,
         "non_duplicates_total": 1000,
-        "wrong_hits": 16,
-        "false_hit_rate": 0.016,
-        "precision": 0.908,
-        "f1": 0.2692
+        "wrong_hits": 15,
+        "false_hit_rate": 0.015,
+        "precision": 0.9074,
+        "f1": 0.253
       },
       "guard_on_legacy_thresh_95": {
         "config": "guard_on_legacy",
@@ -467,30 +467,9 @@
           "ground_truth": 0
         },
         {
-          "query": "Can you sign a document on behalf of someone else?",
-          "matched_question": "How do I sign a document on behalf of someone else?",
-          "score": 0.9245,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "Why do we celebrate mother's day?",
-          "matched_question": "Should we celebrate Mother's Day?",
-          "score": 0.8768,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
           "query": "How is CGPA calculated for BE?",
           "matched_question": "How will my CGPA be calculated?",
           "score": 0.8698,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
-          "query": "How can I predict my future?",
-          "matched_question": "Can you predict my future?",
-          "score": 0.8583,
           "guard_verdict": "ACCEPT",
           "ground_truth": 0
         }
@@ -609,13 +588,6 @@
           "ground_truth": 0
         },
         {
-          "query": "Can you sign a document on behalf of someone else?",
-          "matched_question": "How do I sign a document on behalf of someone else?",
-          "score": 0.9245,
-          "guard_verdict": "ACCEPT",
-          "ground_truth": 0
-        },
-        {
           "query": "What are the best places (stores) to buy wedding dresses for men in Mumbai and Delhi?",
           "matched_question": "What are the best places (stores) to buy wedding dresses for men in Delhi?",
           "score": 0.9228,
@@ -633,6 +605,13 @@
           "query": "What is the scope of Mechanical Engineering?",
           "matched_question": "What is the future scope of mechanical engineering?",
           "score": 0.9191,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "Who is the best politician?",
+          "matched_question": "Who do you think is the best politician in history?",
+          "score": 0.9151,
           "guard_verdict": "VERIFY",
           "ground_truth": 0
         }
