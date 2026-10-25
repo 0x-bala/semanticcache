@@ -1,6 +1,6 @@
 {
   "system": {
-    "date": "2026-10-25 03:09:13 UTC",
+    "date": "2026-10-25 03:49:07 UTC",
     "python_version": "3.13.14",
     "os": "Windows-11-10.0.26300-SP0",
     "cpu_count": 12,
@@ -117,92 +117,204 @@
     },
     "settings": {
       "guard_off_thresh_80": {
-        "guard_enabled": false,
+        "config": "guard_off",
         "threshold": 0.8,
+        "guard_enabled": false,
         "true_duplicates_total": 1000,
-        "true_hits": 806,
-        "recall": 0.806,
+        "true_hits": 790,
+        "recall": 0.79,
         "non_duplicates_total": 1000,
-        "wrong_hits": 234,
-        "false_hit_rate": 0.234,
-        "precision": 0.775,
-        "f1": 0.7902
+        "wrong_hits": 229,
+        "false_hit_rate": 0.229,
+        "precision": 0.7753,
+        "f1": 0.7826
       },
       "guard_off_thresh_85": {
-        "guard_enabled": false,
+        "config": "guard_off",
         "threshold": 0.85,
+        "guard_enabled": false,
         "true_duplicates_total": 1000,
-        "true_hits": 652,
-        "recall": 0.652,
+        "true_hits": 640,
+        "recall": 0.64,
         "non_duplicates_total": 1000,
-        "wrong_hits": 149,
-        "false_hit_rate": 0.149,
-        "precision": 0.814,
-        "f1": 0.724
+        "wrong_hits": 147,
+        "false_hit_rate": 0.147,
+        "precision": 0.8132,
+        "f1": 0.7163
       },
       "guard_off_thresh_90": {
-        "guard_enabled": false,
+        "config": "guard_off",
         "threshold": 0.9,
+        "guard_enabled": false,
         "true_duplicates_total": 1000,
-        "true_hits": 447,
-        "recall": 0.447,
+        "true_hits": 438,
+        "recall": 0.438,
         "non_duplicates_total": 1000,
         "wrong_hits": 67,
         "false_hit_rate": 0.067,
-        "precision": 0.8696,
-        "f1": 0.5905
+        "precision": 0.8673,
+        "f1": 0.5821
       },
       "guard_off_thresh_95": {
-        "guard_enabled": false,
+        "config": "guard_off",
         "threshold": 0.95,
+        "guard_enabled": false,
         "true_duplicates_total": 1000,
-        "true_hits": 224,
-        "recall": 0.224,
+        "true_hits": 220,
+        "recall": 0.22,
         "non_duplicates_total": 1000,
         "wrong_hits": 23,
         "false_hit_rate": 0.023,
-        "precision": 0.9069,
-        "f1": 0.3593
+        "precision": 0.9053,
+        "f1": 0.354
       },
       "guard_on_thresh_80": {
-        "guard_enabled": true,
+        "config": "guard_on",
         "threshold": 0.8,
+        "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 461,
-        "recall": 0.461,
+        "true_hits": 83,
+        "recall": 0.083,
         "non_duplicates_total": 1000,
-        "wrong_hits": 95,
-        "false_hit_rate": 0.095,
-        "precision": 0.8291,
-        "f1": 0.5925
+        "wrong_hits": 11,
+        "false_hit_rate": 0.011,
+        "precision": 0.883,
+        "f1": 0.1517
       },
       "guard_on_thresh_85": {
-        "guard_enabled": true,
+        "config": "guard_on",
         "threshold": 0.85,
+        "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 338,
-        "recall": 0.338,
+        "true_hits": 83,
+        "recall": 0.083,
         "non_duplicates_total": 1000,
-        "wrong_hits": 47,
-        "false_hit_rate": 0.047,
-        "precision": 0.8779,
-        "f1": 0.4881
+        "wrong_hits": 11,
+        "false_hit_rate": 0.011,
+        "precision": 0.883,
+        "f1": 0.1517
       },
       "guard_on_thresh_90": {
-        "guard_enabled": true,
+        "config": "guard_on",
         "threshold": 0.9,
+        "guard_enabled": true,
         "true_duplicates_total": 1000,
-        "true_hits": 190,
-        "recall": 0.19,
+        "true_hits": 81,
+        "recall": 0.081,
         "non_duplicates_total": 1000,
-        "wrong_hits": 19,
-        "false_hit_rate": 0.019,
-        "precision": 0.9091,
-        "f1": 0.3143
+        "wrong_hits": 8,
+        "false_hit_rate": 0.008,
+        "precision": 0.9101,
+        "f1": 0.1488
       },
       "guard_on_thresh_95": {
-        "guard_enabled": true,
+        "config": "guard_on",
         "threshold": 0.95,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 73,
+        "recall": 0.073,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 5,
+        "false_hit_rate": 0.005,
+        "precision": 0.9359,
+        "f1": 0.1354
+      },
+      "guard_on_legacy_thresh_80": {
+        "config": "guard_on_legacy",
+        "threshold": 0.8,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 280,
+        "recall": 0.28,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 48,
+        "false_hit_rate": 0.048,
+        "precision": 0.8537,
+        "f1": 0.4217
+      },
+      "guard_on_legacy_thresh_85": {
+        "config": "guard_on_legacy",
+        "threshold": 0.85,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 230,
+        "recall": 0.23,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 32,
+        "false_hit_rate": 0.032,
+        "precision": 0.8779,
+        "f1": 0.3645
+      },
+      "guard_on_legacy_thresh_90": {
+        "config": "guard_on_legacy",
+        "threshold": 0.9,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 158,
+        "recall": 0.158,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 16,
+        "false_hit_rate": 0.016,
+        "precision": 0.908,
+        "f1": 0.2692
+      },
+      "guard_on_legacy_thresh_95": {
+        "config": "guard_on_legacy",
+        "threshold": 0.95,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 89,
+        "recall": 0.089,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 6,
+        "false_hit_rate": 0.006,
+        "precision": 0.9368,
+        "f1": 0.1626
+      },
+      "guard_on_verifier_thresh_80": {
+        "config": "guard_on_verifier",
+        "threshold": 0.8,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 83,
+        "recall": 0.083,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 11,
+        "false_hit_rate": 0.011,
+        "precision": 0.883,
+        "f1": 0.1517
+      },
+      "guard_on_verifier_thresh_85": {
+        "config": "guard_on_verifier",
+        "threshold": 0.85,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 83,
+        "recall": 0.083,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 11,
+        "false_hit_rate": 0.011,
+        "precision": 0.883,
+        "f1": 0.1517
+      },
+      "guard_on_verifier_thresh_90": {
+        "config": "guard_on_verifier",
+        "threshold": 0.9,
+        "guard_enabled": true,
+        "true_duplicates_total": 1000,
+        "true_hits": 81,
+        "recall": 0.081,
+        "non_duplicates_total": 1000,
+        "wrong_hits": 8,
+        "false_hit_rate": 0.008,
+        "precision": 0.9101,
+        "f1": 0.1488
+      },
+      "guard_on_verifier_thresh_95": {
+        "config": "guard_on_verifier",
+        "threshold": 0.95,
+        "guard_enabled": true,
         "true_duplicates_total": 1000,
         "true_hits": 73,
         "recall": 0.073,
@@ -213,168 +325,451 @@
         "f1": 0.1354
       }
     },
-    "worst_20_wrong_hits_at_guard_on_85": [
-      {
-        "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
-        "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
-        "score": 1.0,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "Which fruits and vegetables help to increase the blood?",
-        "matched_question": "Which fruits and vegetables help to increase the blood?",
-        "score": 1.0,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "Is timetravel possible?",
-        "matched_question": "Is timetravel possible?",
-        "score": 1.0,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "Is it possible for a Chinese girl to be in a relationship with an Indian boy?",
-        "matched_question": "Is it possible for an Indian girl to be in a relationship with a Chinese boy?",
-        "score": 0.9955,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "What are indicators of a chemical change?",
-        "matched_question": "What are the indicators of a chemical change?",
-        "score": 0.9936,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "Where can I find best hotel in Bhopal for holidays?",
-        "matched_question": "Where can I find the best hotel in Bhopal for a stay in the holidays?",
-        "score": 0.9855,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How can I get rid of my acne and acne scars?",
-        "matched_question": "How can I get rid of my acne scars?",
-        "score": 0.9799,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "Which is the best digital marketing course?",
-        "matched_question": "Which is the best course for digital marketing?",
-        "score": 0.9767,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How much marks in need in mains to get ECE in Hyderabad?",
-        "matched_question": "How much marks in need in mains to get ECE in IIIT Hyderabad?",
-        "score": 0.9731,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Mono County California area?",
-        "matched_question": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Fresno County California area?",
-        "score": 0.9655,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How do you reset your Yahoo! password?",
-        "matched_question": "How do you reset your Yahoo password?",
-        "score": 0.9553,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "In the real world can men and women ever be equal?",
-        "matched_question": "Can men and women ever be equal?",
-        "score": 0.9543,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How can millennials better engage with church?",
-        "matched_question": "How can the church better engage millennials?",
-        "score": 0.9538,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "Which cleaning service company is best in South Australia?",
-        "matched_question": "Which is the best cleaning service company in Australia?",
-        "score": 0.9527,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "What is a suitable inpatient drug and alcohol rehab center near Treutlen County GA?",
-        "matched_question": "What is a suitable inpatient drug and alcohol rehab center near Habersham County GA?",
-        "score": 0.9523,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "Can the Logitech wireless headset use the same nano as their wireless keyboard mouse combo?",
-        "matched_question": "Will a Logitech wireless headset work using the same nano as a Logitech Keyboard Mouse combo?",
-        "score": 0.952,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "What is the biggest achievement of your life?",
-        "matched_question": "What is the biggest achievement in life?",
-        "score": 0.9474,
-        "guard_verdict": "ACCEPT",
-        "ground_truth": 0,
-        "why_wrong": "Lexical synonymy false-positive"
-      },
-      {
-        "query": "Which is the best site to download TV Series?",
-        "matched_question": "Which is the best site to download TV series other than torrents?",
-        "score": 0.9463,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How do unicellular organisms maintain homeostasis for survival?",
-        "matched_question": "How is homeostasis maintained in unicellular organisms?",
-        "score": 0.9441,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      },
-      {
-        "query": "How many hours should I spend Quora each day?",
-        "matched_question": "How many hours a day do you spend on Quora?",
-        "score": 0.9402,
-        "guard_verdict": "VERIFY",
-        "ground_truth": 0,
-        "why_wrong": "Slot substitution / distinct target entities with similar syntax"
-      }
-    ]
+    "worst_20_wrong_hits_at_0.85": {
+      "guard_off": [
+        {
+          "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which fruits and vegetables help to increase the blood?",
+          "matched_question": "Which fruits and vegetables help to increase the blood?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Is timetravel possible?",
+          "matched_question": "Is timetravel possible?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Is it possible for a Chinese girl to be in a relationship with an Indian boy?",
+          "matched_question": "Is it possible for an Indian girl to be in a relationship with a Chinese boy?",
+          "score": 0.9955,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are indicators of a chemical change?",
+          "matched_question": "What are the indicators of a chemical change?",
+          "score": 0.9936,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Where can I find best hotel in Bhopal for holidays?",
+          "matched_question": "Where can I find the best hotel in Bhopal for a stay in the holidays?",
+          "score": 0.9855,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can I get rid of my acne and acne scars?",
+          "matched_question": "How can I get rid of my acne scars?",
+          "score": 0.9799,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which is the best digital marketing course?",
+          "matched_question": "Which is the best course for digital marketing?",
+          "score": 0.9767,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are some jobs that involve adventure?",
+          "matched_question": "What are the jobs that involve a bit of adventure?",
+          "score": 0.9755,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can I import Excel data into MySQL?",
+          "matched_question": "How do I import data into MySQL from excel files?",
+          "score": 0.9754,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How much marks in need in mains to get ECE in Hyderabad?",
+          "matched_question": "How much marks in need in mains to get ECE in IIIT Hyderabad?",
+          "score": 0.9731,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are some of the best nightclubs in dubai?",
+          "matched_question": "Which is the best nightclub in Dubai?",
+          "score": 0.9716,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Mono County California area?",
+          "matched_question": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Fresno County California area?",
+          "score": 0.9655,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What is your investment checklist before you buy a stock?",
+          "matched_question": "What is your investment checklist before you sell a stock?",
+          "score": 0.9637,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "I have a two month old knee injury, how can I still continue to lose weight?",
+          "matched_question": "I have a six month old knee injury, how can I still continue to lose weight?",
+          "score": 0.9603,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are the things Indians are proud of which they should not be?",
+          "matched_question": "What are some things Indians should be proud of?",
+          "score": 0.9601,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Where can I find a willing mentor?",
+          "matched_question": "Where/how can I find a mentor?",
+          "score": 0.9587,
+          "guard_verdict": "REJECT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How do you reset your Yahoo! password?",
+          "matched_question": "How do you reset your Yahoo password?",
+          "score": 0.9553,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "In the real world can men and women ever be equal?",
+          "matched_question": "Can men and women ever be equal?",
+          "score": 0.9543,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can millennials better engage with church?",
+          "matched_question": "How can the church better engage millennials?",
+          "score": 0.9538,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        }
+      ],
+      "guard_on": [
+        {
+          "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which fruits and vegetables help to increase the blood?",
+          "matched_question": "Which fruits and vegetables help to increase the blood?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Is timetravel possible?",
+          "matched_question": "Is timetravel possible?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are indicators of a chemical change?",
+          "matched_question": "What are the indicators of a chemical change?",
+          "score": 0.9936,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How do you reset your Yahoo! password?",
+          "matched_question": "How do you reset your Yahoo password?",
+          "score": 0.9553,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What is the biggest achievement of your life?",
+          "matched_question": "What is the biggest achievement in life?",
+          "score": 0.9474,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What does \"grit\" mean?",
+          "matched_question": "What is grit?",
+          "score": 0.9306,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Can you sign a document on behalf of someone else?",
+          "matched_question": "How do I sign a document on behalf of someone else?",
+          "score": 0.9245,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Why do we celebrate mother's day?",
+          "matched_question": "Should we celebrate Mother's Day?",
+          "score": 0.8768,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How is CGPA calculated for BE?",
+          "matched_question": "How will my CGPA be calculated?",
+          "score": 0.8698,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can I predict my future?",
+          "matched_question": "Can you predict my future?",
+          "score": 0.8583,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        }
+      ],
+      "guard_on_legacy": [
+        {
+          "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which fruits and vegetables help to increase the blood?",
+          "matched_question": "Which fruits and vegetables help to increase the blood?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Is timetravel possible?",
+          "matched_question": "Is timetravel possible?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are indicators of a chemical change?",
+          "matched_question": "What are the indicators of a chemical change?",
+          "score": 0.9936,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Where can I find best hotel in Bhopal for holidays?",
+          "matched_question": "Where can I find the best hotel in Bhopal for a stay in the holidays?",
+          "score": 0.9855,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can I get rid of my acne and acne scars?",
+          "matched_question": "How can I get rid of my acne scars?",
+          "score": 0.9799,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How much marks in need in mains to get ECE in Hyderabad?",
+          "matched_question": "How much marks in need in mains to get ECE in IIIT Hyderabad?",
+          "score": 0.9731,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How do you reset your Yahoo! password?",
+          "matched_question": "How do you reset your Yahoo password?",
+          "score": 0.9553,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "In the real world can men and women ever be equal?",
+          "matched_question": "Can men and women ever be equal?",
+          "score": 0.9543,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which cleaning service company is best in South Australia?",
+          "matched_question": "Which is the best cleaning service company in Australia?",
+          "score": 0.9527,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What is the biggest achievement of your life?",
+          "matched_question": "What is the biggest achievement in life?",
+          "score": 0.9474,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which is the best site to download TV Series?",
+          "matched_question": "Which is the best site to download TV series other than torrents?",
+          "score": 0.9463,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How many hours should I spend Quora each day?",
+          "matched_question": "How many hours a day do you spend on Quora?",
+          "score": 0.9402,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What does \"grit\" mean?",
+          "matched_question": "What is grit?",
+          "score": 0.9306,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are some life hacks for students?",
+          "matched_question": "What are some life hacks for college students?",
+          "score": 0.9301,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are the best place to visit in India with friends in December?",
+          "matched_question": "What will be the best place to visit in December in India?",
+          "score": 0.9256,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "Can you sign a document on behalf of someone else?",
+          "matched_question": "How do I sign a document on behalf of someone else?",
+          "score": 0.9245,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are the best places (stores) to buy wedding dresses for men in Mumbai and Delhi?",
+          "matched_question": "What are the best places (stores) to buy wedding dresses for men in Delhi?",
+          "score": 0.9228,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can you get thicker thighs?",
+          "matched_question": "How can you get thicker thighs and calves?",
+          "score": 0.9192,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        },
+        {
+          "query": "What is the scope of Mechanical Engineering?",
+          "matched_question": "What is the future scope of mechanical engineering?",
+          "score": 0.9191,
+          "guard_verdict": "VERIFY",
+          "ground_truth": 0
+        }
+      ],
+      "guard_on_verifier": [
+        {
+          "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "matched_question": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Which fruits and vegetables help to increase the blood?",
+          "matched_question": "Which fruits and vegetables help to increase the blood?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Is timetravel possible?",
+          "matched_question": "Is timetravel possible?",
+          "score": 1.0,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What are indicators of a chemical change?",
+          "matched_question": "What are the indicators of a chemical change?",
+          "score": 0.9936,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How do you reset your Yahoo! password?",
+          "matched_question": "How do you reset your Yahoo password?",
+          "score": 0.9553,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What is the biggest achievement of your life?",
+          "matched_question": "What is the biggest achievement in life?",
+          "score": 0.9474,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "What does \"grit\" mean?",
+          "matched_question": "What is grit?",
+          "score": 0.9306,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Can you sign a document on behalf of someone else?",
+          "matched_question": "How do I sign a document on behalf of someone else?",
+          "score": 0.9245,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "Why do we celebrate mother's day?",
+          "matched_question": "Should we celebrate Mother's Day?",
+          "score": 0.8768,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How is CGPA calculated for BE?",
+          "matched_question": "How will my CGPA be calculated?",
+          "score": 0.8698,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        },
+        {
+          "query": "How can I predict my future?",
+          "matched_question": "Can you predict my future?",
+          "score": 0.8583,
+          "guard_verdict": "ACCEPT",
+          "ground_truth": 0
+        }
+      ]
+    },
+    "note": "Decisions come from SemanticCache.get(). 'guard_on' uses library defaults (VERIFY without a verifier is a miss); 'guard_on_legacy' reproduces the old benchmark policy (verify_always=False)."
   },
   "part2b_gemini_sample": {
     "status": "QUOTA_EXHAUSTED",
@@ -384,7 +779,7 @@
     "evaluated_non_duplicates": 0,
     "model": "gemini-embedding-001",
     "output_dimensionality": 768,
-    "api_calls_made": 1,
+    "api_calls_made": 0,
     "similarity_distribution": {},
     "threshold_evaluations": {},
     "error_details": "Gemini request failed: HTTP Error 429: Too Many Requests",

@@ -17,6 +17,7 @@ New in v0.2.0:
     embedders.is_zero_vector()
 """
 
+from . import metrics
 from .adapters import LangChainSemanticCache, LlamaIndexSemanticCache, wrap_openai
 from .cache import CacheResult, SemanticCache, Stats, cached
 from .context import CacheContext
@@ -76,4 +77,5 @@ __all__ = [
     # Helpers
     "validate_embedding",
     "is_zero_vector",
+    "metrics",
 ]

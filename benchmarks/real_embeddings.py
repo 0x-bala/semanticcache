@@ -20,15 +20,6 @@ import types
 from importlib.machinery import ModuleSpec
 from typing import Any
 
-# Ensure sklearn Cython DLL block on Windows App Control does not impede transformers
-if "sklearn" not in sys.modules:
-    m = types.ModuleType("sklearn")
-    m.__spec__ = ModuleSpec("sklearn", None)
-    sys.modules["sklearn"] = m
-    m_met = types.ModuleType("sklearn.metrics")
-    m_met.__spec__ = ModuleSpec("sklearn.metrics", None)
-    m_met.roc_curve = lambda *a, **kw: (None, None, None)
-    sys.modules["sklearn.metrics"] = m_met
 
 import numpy as np  # noqa: E402
 import psutil  # noqa: E402

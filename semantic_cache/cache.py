@@ -137,15 +137,46 @@ class Stats:
         return self.hits / total if total else 0.0
 
     @property
+    def cache_hit_rate(self) -> float:
+        """Alias for hit_rate (cache-hit rate / queries that reached lookup)."""
+        return self.hit_rate
+
+    @property
     def estimated_false_hit_rate(self) -> float:
         """Estimated false-hit rate from shadow-mode evaluations (0.0 if no evaluations).
 
-        Shadow errors and timeouts are excluded from this calculation.
+        Definition (shadow-based, response-comparison): 
+        - Numerator: shadow_mismatches (responses differ per comparator; errors excluded)
+        - Denominator: shadow_matches + shadow_mismatches (valid shadow evaluations only)
+        - Excludes shadow_errors/timeouts. This measures response-difference rate under
+          the configured comparator; it is NOT the same as "false hits on non-duplicate queries"
+          which depends on ground-truth labels and query pairing.
         """
         valid = self.shadow_matches + self.shadow_mismatches
         if valid == 0:
             return 0.0
         return self.shadow_mismatches / valid
+
+    @property
+    def shadow_mismatch_rate(self) -> float:
+        """Alias for estimated_false_hit_rate with explicit naming."""
+        return self.estimated_false_hit_rate
+
+    @property
+    def guard_rejection_rate(self) -> float:
+        """Guard rejection rate among candidates that reached guard evaluation."""
+        total_guarded = self.guard_rejects + self.verify_calls + self.hits
+        if total_guarded == 0:
+            return 0.0
+        return self.guard_rejects / total_guarded
+
+    @property
+    def verification_rate(self) -> float:
+        """Rate of candidates that went to verification."""
+        total_guarded = self.guard_rejects + self.verify_calls + self.hits
+        if total_guarded == 0:
+            return 0.0
+        return self.verify_calls / total_guarded
 
     def reset(self) -> None:
         """Reset all counters and the latency map."""
@@ -164,7 +195,7 @@ class Stats:
         self._latency.clear()
 
     def as_dict(self) -> dict[str, Any]:
-        """Return a JSON-serialisable snapshot of the stats."""
+        """Return a JSON-serialisable snapshot of the stats with explicit definitions."""
         return {
             "hits": self.hits,
             "misses": self.misses,
@@ -176,9 +207,27 @@ class Stats:
             "shadow_evaluations": self.shadow_evaluations,
             "shadow_matches": self.shadow_matches,
             "shadow_mismatches": self.shadow_mismatches,
+            "shadow_errors": self.shadow_errors,
             "estimated_false_hit_rate": round(self.estimated_false_hit_rate, 4),
-            "seconds_saved": round(self.seconds_saved, 4),
+            "shadow_mismatch_rate": round(self.shadow_mismatch_rate, 4),
             "hit_rate": round(self.hit_rate, 4),
+            "cache_hit_rate": round(self.cache_hit_rate, 4),
+            "guard_rejection_rate": round(self.guard_rejection_rate, 4),
+            "verification_rate": round(self.verification_rate, 4),
+            "seconds_saved": round(self.seconds_saved, 4),
+            "metric_definitions": {
+                "cache_hit_rate": {"numerator": "hits", "denominator": "hits + misses"},
+                "shadow_mismatch_rate": {
+                    "numerator": "shadow_mismatches",
+                    "denominator": "shadow_matches + shadow_mismatches",
+                    "notes": "Excludes shadow_errors; depends on comparator",
+                },
+                "guard_rejection_rate": {
+                    "numerator": "guard_rejects",
+                    "denominator": "guard_rejects + verify_calls + hits",
+                    "notes": "Approximate denominator over guard-evaluated candidates",
+                },
+            },
         }
 
 
