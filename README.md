@@ -23,25 +23,41 @@ A lightweight, plug-and-play **semantic caching layer** for LLM calls. Instead o
 | 🗂️ Namespaces | Isolate caches per model / system prompt / user |
 | 📊 Stats | Hit-rate, misses, seconds saved |
 | 🔧 Swappable embedders | `HashingEmbedder` (offline) or `SentenceTransformerEmbedder` |
-| ⚡ Async API | Async get-or-compute and decorator support |
+| ⚡ Async API | Native `aget`, `aset`, `aask`, and async streaming caching |
+| 🌊 Streaming support | Cache generator and async iterator chunk streams |
+| 🏷️ `@cached` decorator | Sync & async function decorator with bypass support |
+| 🤝 Adapters | Drop-in integrations for OpenAI, LangChain, and LlamaIndex |
+| 🤖 Provider Embedders | OpenAI, Cohere, Ollama, Gemini, SentenceTransformers, Hashing |
+| 🧹 Eviction Policies | LRU, LFU (least frequently used), FIFO (first-in first-out) |
+| 🚀 In-memory + ANN | Microsecond in-memory index with optional FAISS/HNSW backend |
 | 🔐 Context isolation | Opaque namespaces from response-affecting context |
 
 ---
 
-## Quick Start
+## Installation & Extras
 
 ```bash
-pip install numpy
-# Optional: real semantic embeddings
-pip install sentence-transformers
+# Core package (zero heavy dependencies)
+pip install semantic-cache
+
+# Optional extras:
+pip install "semantic-cache[ann]"          # FAISS / HNSW acceleration
+pip install "semantic-cache[openai]"       # OpenAI SDK & embedder
+pip install "semantic-cache[cohere]"       # Cohere embedder
+pip install "semantic-cache[langchain]"    # LangChain cache adapter
+pip install "semantic-cache[llama-index]"  # LlamaIndex KVStore adapter
+pip install "semantic-cache[all]"          # All optional dependencies
 ```
+
+---
+
+## Quick Start
 
 ```python
 from semantic_cache import SemanticCache
 
 cache = SemanticCache(threshold=0.85, ttl=3600)
 
-# In production, replace this mock with your actual LLM call (e.g. OpenAI / Gemini)
 def mock_llm(prompt: str) -> str:
     return f"Response to: {prompt}"
 
@@ -50,106 +66,173 @@ def ask_llm(prompt: str) -> str:
     return mock_llm(prompt)
 
 print(ask_llm("What is the capital of France?"))   # MISS → calls LLM
-print(ask_llm("what's the capital of france"))      # HIT  → instant
+print(ask_llm("what's the capital of france"))      # HIT  → instant (< 1 ms)
 ```
-
-## Production checklist
-
-The default `HashingEmbedder` is for demos and near-duplicate detection, not
-for high-stakes semantic matching. Use a real embedding model, validate its
-threshold against your own traffic, and set a conservative threshold (usually
-`>= 0.90`). Bypass the cache for personalised, time-sensitive, or action-taking
-requests.
-
-Partition every response-affecting input with `CacheContext`; its namespace is
-opaque, so raw tenant/user identifiers are not written to the cache database.
-
-```python
-from semantic_cache import CacheContext, SemanticCache
-
-context = CacheContext(
-    tenant="acme",
-    user_scope="account-123",
-    model="your-model",
-    system_prompt_version="support-v7",
-    tools_version="tools-v3",
-    retrieval_version="knowledge-base-2026-10",
-    locale="en-IN",
-)
-
-def mock_llm(prompt: str) -> str:
-    return f"Response for: {prompt}"
-
-cache = SemanticCache(threshold=0.92, ttl=300)
-result = cache.get_or_compute(
-    "Tell me about Paris",
-    mock_llm,
-    namespace=context.namespace(),
-)
-print(result.response)
-```
-
-For async services, use `async_get_or_compute()` or `@cache.async_cached()`.
-Ordinary async requests coalesce within one event loop; bypass calls always
-compute independently and never read or write cache state.
-
-SQLite is suitable for a single process or local deployment. Note that `SQLiteStore()`
-with no path is in-memory (`:memory:`) by default and will not persist across restarts;
-pass a file path (e.g. `SQLiteStore("cache.db")`) for persistent on-disk storage.
-The public `CacheStore` protocol allows a Redis, Postgres, or vector-database backend for
-multi-instance deployments. Use encryption, access controls, and retention
-policies appropriate to the cached data.
 
 ---
 
-## Going to production
+## Integrations & Advanced Features
 
-Before turning on semantic caching at scale in user-facing production systems, validate accuracy and false-hit safety using the built-in **Shadow Mode** and **Hit Guard**.
+### 1. Async API (`aget`, `aset`, `aask`)
 
-### 1. Shadow-Mode Checklist
-
-Shadow mode continuously runs the true LLM call in a background worker pool on a sampled fraction of cache hits, comparing the fresh response against the cached response without delaying the user.
-
-- **Recommended `shadow_rate`**:
-  - **Canary / Ramp-up**: `shadow_rate=0.10` (10% of hits) to quickly accumulate statistical power.
-  - **Steady-State Production**: `shadow_rate=0.01` to `0.05` (1%–5%) to maintain continuous drift and regression monitoring with minimal extra LLM cost.
-- **Asynchronous Execution & Bounded Concurrency**:
-  - Shadow evaluation runs entirely in daemon background threads (`shadow_max_concurrency=4` by default), completely off the critical request path.
-  - Even if the shadow LLM call hangs or fails, user responses return in `< 1 ms`.
-- **Minimum Sample Size (The 3 / n Rule)**:
-  - In statistics, the *Rule of Three* states that if an event has occurred 0 times in $n$ trials, the 95% confidence interval for the true failure rate is $[0, 3/n]$.
-  - To be 95% confident that your true false-hit rate is **under 1% ($p < 0.01$)**, you must observe **zero mismatches across at least $n = 3 / 0.01 = 300$** shadow evaluations.
-  - For a target of **under 0.1% ($p < 0.001$)**, accumulate at least **$n = 3,000$** shadow evaluations without mismatch before full rollout.
-- **How to Read `estimated_false_hit_rate`**:
-  - `cache.stats.estimated_false_hit_rate` = $\frac{\text{shadow\_mismatches}}{\text{shadow\_evaluations}}$.
-  - **0.00 (0%)**: Perfect alignment between cached answers and fresh LLM answers.
-  - **< 0.01 (< 1%)**: Acceptable for standard conversational assistants where paraphrases have slight stylistic variation (verified by `GeminiVerifier` or `shadow_comparator`).
-  - **> 0.02 (> 2%)**: Critical warning. Investigate false positives using `tools/tune_threshold.py`. Increase `threshold` (e.g. from 0.88 to 0.95), ensure `guard=True`, or enable `verify_always=True` with `GeminiVerifier`.
-
-### 2. Eviction & Memory Management
-
-- **Bounded Growth**: Set `max_entries` on `SQLiteStore(max_entries=50000)` to enforce LRU eviction by `last_hit_at` (falling back to `created_at`).
-- **Embedding Dimensionality**: When using `GeminiEmbedder`, select `output_dimensionality=768` or `1536` to save 2–4× RAM over the default 3072 dimensions with negligible loss in retrieval precision.
-- **Multi-Process Concurrency**: Schema migrations automatically acquire SQLite lock guards, preventing concurrent migration conflicts during rolling application restarts.
-
-## Gemini quick start
-
-Store `GEMINI_API_KEY` in your environment, then use Gemini for both answer
-generation and semantic embeddings. The key is read at runtime and is never
-stored by this package.
+Native `async` / `await` support without blocking event loops:
 
 ```python
-from semantic_cache import GeminiClient, GeminiEmbedder, SemanticCache
+import asyncio
+from semantic_cache import SemanticCache
 
-cache = SemanticCache(embedder=GeminiEmbedder(), threshold=0.95, ttl=300)
-gemini = GeminiClient(model="gemini-2.5-flash")
+cache = SemanticCache(threshold=0.88)
 
-result = cache.get_or_compute(
-    "How do I reset my password?",
-    gemini.generate,
-    namespace="support-v1",
+async def main():
+    # Direct async set and get
+    await cache.aset("What is async Python?", "Async Python uses coroutines.")
+    res = await cache.aget("what is async python")
+    if res and res.hit:
+        print("Async hit:", res.response)
+
+    # aask: get-or-compute with sync or async LLM call
+    async def call_llm(prompt: str) -> str:
+        await asyncio.sleep(0.1)
+        return f"LLM answer to {prompt}"
+
+    answer = await cache.aask("Explain event loops", call_llm)
+    print(answer)
+
+asyncio.run(main())
+```
+
+### 2. Streaming Response Caching
+
+Cache chunked streaming responses from generators and async generators:
+
+```python
+# Sync streaming
+def stream_llm(prompt: str):
+    for token in ["Hello ", "world ", "from ", "stream!"]:
+        yield token
+
+# First call streams from LLM; subsequent calls replay cached stream instantly
+for chunk in cache.get_or_compute_stream("Say hello", stream_llm):
+    print(chunk, end="", flush=True)
+
+# Async streaming
+async def async_stream_llm(prompt: str):
+    for token in ["Async ", "token ", "stream"]:
+        yield token
+
+async for chunk in cache.async_get_or_compute_stream("Say hello async", async_stream_llm):
+    print(chunk, end="", flush=True)
+```
+
+### 3. Standalone `@cached` Decorator
+
+Use the `@cached` decorator on sync and async functions, with support for custom key functions and bypass flags:
+
+```python
+from semantic_cache import cached
+
+@cached(threshold=0.90, ttl=3600)
+def generate_summary(text: str) -> str:
+    return f"Summary of {text}"
+
+# Normal call (hits cache on duplicate/paraphrase)
+summary = generate_summary("Analyze quarterly performance")
+
+# Bypass cache when a fresh response is strictly required
+fresh = generate_summary("Analyze quarterly performance", bypass=True)
+```
+
+### 4. OpenAI Client Wrapper
+
+Wrap standard sync or async `OpenAI` clients to transparently cache completions and streaming responses:
+
+```python
+from openai import OpenAI
+from semantic_cache import SemanticCache
+from semantic_cache.adapters.openai import wrap_openai
+
+client = wrap_openai(OpenAI(), cache=SemanticCache(threshold=0.92))
+
+# Non-streaming call: cached on semantic match
+response = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What is Python?"}],
 )
-print(result.response)
+
+# Streaming call: cached and replayed seamlessly
+stream = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[{"role": "user", "content": "What is Python?"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
+```
+
+### 5. LangChain & LlamaIndex Adapters
+
+Drop-in adapters for major AI application frameworks:
+
+```python
+# LangChain Integration
+from langchain_community.globals import set_llm_cache
+from semantic_cache.adapters.langchain import LangChainSemanticCache
+
+set_llm_cache(LangChainSemanticCache(threshold=0.88))
+
+# LlamaIndex Integration
+from llama_index.core import Settings
+from semantic_cache.adapters.llamaindex import LlamaIndexSemanticCache
+
+kv_cache = LlamaIndexSemanticCache(threshold=0.88)
+```
+
+### 6. Provider Embedders (OpenAI, Cohere, Ollama)
+
+Plug in your preferred embedding provider with automatic batching and L2 normalization:
+
+```python
+from semantic_cache import SemanticCache
+from semantic_cache.embedders import OpenAIEmbedder, CohereEmbedder, OllamaEmbedder
+
+# OpenAI embeddings
+cache = SemanticCache(embedder=OpenAIEmbedder(model="text-embedding-3-small"))
+
+# Cohere embeddings
+cache = SemanticCache(embedder=CohereEmbedder(model="embed-english-v3.0"))
+
+# Ollama local embeddings (offline / self-hosted)
+cache = SemanticCache(embedder=OllamaEmbedder(model="nomic-embed-text"))
+```
+
+### 7. Eviction Policies (LFU, FIFO, LRU)
+
+Control cache memory reclamation under `max_entries`:
+
+```python
+from semantic_cache import SemanticCache, SQLiteStore
+
+# LFU: evict least frequently used entries first
+store_lfu = SQLiteStore("cache.db", max_entries=50000, eviction_policy="lfu")
+
+# FIFO: evict oldest created entries first
+store_fifo = SQLiteStore("cache.db", max_entries=50000, eviction_policy="fifo")
+
+# LRU (default): evict least recently accessed entries
+store_lru = SQLiteStore("cache.db", max_entries=50000, eviction_policy="lru")
+
+cache = SemanticCache(store=store_lfu)
+```
+
+### 8. ANN Index Acceleration (FAISS / HNSW)
+
+For large caches (> 10,000 entries), enable approximate nearest neighbor indexing:
+
+```python
+from semantic_cache import SQLiteStore
+
+# Automatically uses FAISS when cache entries exceed ann_threshold (default: 10,000)
+store = SQLiteStore("cache.db", ann_backend="faiss", ann_threshold=10000)
 ```
 
 ---
@@ -160,36 +243,48 @@ print(result.response)
 SemanticCache
 ├── Embedder         (text → unit vector)
 │   ├── HashingEmbedder          ← offline, character n-grams
-│   └── SentenceTransformerEmbedder ← real paraphrase matching
-└── SQLiteStore      (vector index + persistence)
-    ├── add()        ← store query + embedding + response
-    ├── search()     ← cosine similarity lookup
-    └── clear()      ← evict by namespace or all
+│   ├── SentenceTransformerEmbedder ← real paraphrase matching
+│   ├── OpenAIEmbedder / CohereEmbedder / OllamaEmbedder
+│   └── GeminiEmbedder
+└── SQLiteStore      (in-memory index + background persistence)
+    ├── Memory Matrix ← < 0.1 ms exact hash & SIMD cosine search
+    ├── ANN Backend   ← Optional FAISS / HNSW for large-scale indices
+    ├── Batched WAL   ← Non-blocking background persistence
+    └── Eviction      ← LRU, LFU, FIFO
 ```
 
 ---
 
 ## API Reference
 
-### `SemanticCache(threshold, ttl, namespace, embedder, store)`
+### `SemanticCache(threshold, ttl, namespace, embedder, store, guard, shadow_rate)`
 
 | Param | Default | Description |
 |-------|---------|-------------|
 | `threshold` | `0.85` | Minimum cosine similarity to count as a hit |
 | `ttl` | `None` | Seconds before entries expire (`None` = never) |
 | `namespace` | `"default"` | Partition key (per model / user / prompt version) |
-| `embedder` | `HashingEmbedder()` | Any object with `.embed(text) -> np.ndarray` |
-| `store` | `SQLiteStore()` | Any compatible store (in-memory `:memory:` by default with no path; pass a file path for persistence) |
+| `embedder` | `HashingEmbedder()` | Any embedder implementing `.embed(text)` and `.embed_batch(texts)` |
+| `store` | `SQLiteStore()` | In-memory index with batched SQLite persistence |
+| `guard` | `True` | Hit guard rejecting semantic collisions (C++/C#, x>5/x<5, km/miles) |
+| `shadow_rate` | `0.0` | Sampled background evaluation rate for false-hit monitoring |
 
-### Methods
+### Core Methods
 
 ```python
-cache.get(query, namespace)              # -> CacheResult | None
-cache.set(query, response, namespace)    # store a response
-cache.get_or_compute(query, compute_fn)  # fetch or call compute_fn
-cache.cached(namespace)(fn)             # decorator
-cache.clear(namespace)                   # evict entries
-cache.stats                              # Stats(hits, misses, hit_rate, seconds_saved)
+# Synchronous API
+cache.get(query, namespace)                      # -> CacheResult | None
+cache.set(query, response, namespace)            # Store an entry
+cache.get_or_compute(query, compute_fn)          # Get cached or compute
+cache.get_or_compute_stream(query, stream_fn)   # Cached streaming
+cache.cached(namespace)(fn)                     # Sync/async decorator
+cache.clear(namespace)                           # Clear namespace or all
+
+# Asynchronous API
+await cache.aget(query, namespace)               # -> CacheResult | None
+await cache.aset(query, response, namespace)     # Store entry asynchronously
+await cache.aask(query, compute_fn)              # Async get-or-compute
+cache.async_get_or_compute_stream(query, fn)     # Async stream generator
 ```
 
 ---

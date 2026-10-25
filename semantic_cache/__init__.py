@@ -17,13 +17,17 @@ New in v0.2.0:
     embedders.is_zero_vector()
 """
 
-from .cache import CacheResult, SemanticCache, Stats
+from .adapters import LangChainSemanticCache, LlamaIndexSemanticCache, wrap_openai
+from .cache import CacheResult, SemanticCache, Stats, cached
 from .context import CacheContext
 from .cross_encoder import CrossEncoderVerifier
 from .embedders import (
+    CohereEmbedder,
     Embedder,
     EmbeddingLRUCache,
     HashingEmbedder,
+    OllamaEmbedder,
+    OpenAIEmbedder,
     SentenceTransformerEmbedder,
     is_zero_vector,
     validate_embedding,
@@ -42,6 +46,7 @@ __all__ = [
     "CacheResult",
     "Stats",
     "CacheContext",
+    "cached",
     # Store
     "SQLiteStore",
     "CacheStore",
@@ -50,11 +55,18 @@ __all__ = [
     "EmbeddingLRUCache",
     "HashingEmbedder",
     "SentenceTransformerEmbedder",
+    "OpenAIEmbedder",
+    "CohereEmbedder",
+    "OllamaEmbedder",
     "GeminiClient",
     "GeminiEmbedder",
     "GeminiAPIError",
     "GeminiVerifier",
     "CrossEncoderVerifier",
+    # Adapters
+    "wrap_openai",
+    "LangChainSemanticCache",
+    "LlamaIndexSemanticCache",
     # Guard
     "check_match",
     "GuardResult",

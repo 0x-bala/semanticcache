@@ -18,6 +18,19 @@ Issues = "https://github.com/0x-bala/semanticcache/issues"
 
 [project.optional-dependencies]
 transformers = ["sentence-transformers>=2.2"]
+ann = ["faiss-cpu>=1.7.0"]
+openai = ["openai>=1.0.0"]
+cohere = ["cohere>=5.0.0"]
+langchain = ["langchain-core>=0.1.0"]
+llama-index = ["llama-index-core>=0.10.0"]
+all = [
+    "faiss-cpu>=1.7.0",
+    "openai>=1.0.0",
+    "cohere>=5.0.0",
+    "langchain-core>=0.1.0",
+    "llama-index-core>=0.10.0",
+    "sentence-transformers>=2.2",
+]
 dev = ["build>=1.2", "pytest>=7.4", "pytest-cov>=4.0", "ruff>=0.6"]
 
 [tool.setuptools.packages.find]

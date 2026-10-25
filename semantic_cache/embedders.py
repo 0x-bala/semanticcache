@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import zlib
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -269,4 +269,224 @@ class EmbeddingLRUCache:
         """Clear all cached embeddings."""
         with self._lock:
             self._cache.clear()
+
+
+def _normalize_vec(v: np.ndarray) -> np.ndarray:
+    norm = float(np.linalg.norm(v))
+    if norm > 0.0:
+        return v / norm
+    return v
+
+
+# ---------------------------------------------------------------------------
+# OpenAIEmbedder
+# ---------------------------------------------------------------------------
+
+class OpenAIEmbedder:
+    """Embedder using the OpenAI Embeddings API (text-embedding-3-small by default)."""
+
+    default_threshold: float = 0.85
+
+    def __init__(
+        self,
+        model_name: str = "text-embedding-3-small",
+        api_key: str | None = None,
+        client: Any = None,
+        dimensions: int | None = None,
+        **client_kwargs: Any,
+    ) -> None:
+        self.model_name = model_name
+        default_dim = 1536 if "small" in model_name or "ada" in model_name else 3072
+        self.dimensions = dimensions or default_dim
+        if client is not None:
+            self.client = client
+        else:
+            try:
+                import openai
+
+                self.client = openai.OpenAI(api_key=api_key, **client_kwargs)
+            except ImportError:
+                raise ImportError(
+                    "The 'openai' package is required for OpenAIEmbedder. "
+                    "Install it via: pip install 'semantic-cache[openai]'"
+                )
+
+    def embed(self, text: str) -> np.ndarray:
+        _validate_text(text)
+        if not text.strip():
+            return np.zeros(self.dimensions, dtype=np.float32)
+        kwargs: dict[str, Any] = {"model": self.model_name, "input": text}
+        if self.dimensions and "text-embedding-3" in self.model_name:
+            kwargs["dimensions"] = self.dimensions
+        response = self.client.embeddings.create(**kwargs)
+        vec = _normalize_vec(np.asarray(response.data[0].embedding, dtype=np.float32))
+        return validate_embedding(vec, self.dimensions)
+
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        if not texts:
+            return []
+        for t in texts:
+            _validate_text(t)
+        kwargs: dict[str, Any] = {"model": self.model_name, "input": texts}
+        if self.dimensions and "text-embedding-3" in self.model_name:
+            kwargs["dimensions"] = self.dimensions
+        response = self.client.embeddings.create(**kwargs)
+        sorted_data = sorted(response.data, key=lambda item: getattr(item, "index", 0))
+        return [
+            validate_embedding(
+                _normalize_vec(np.asarray(item.embedding, dtype=np.float32)), self.dimensions
+            )
+            for item in sorted_data
+        ]
+
+
+# ---------------------------------------------------------------------------
+# CohereEmbedder
+# ---------------------------------------------------------------------------
+
+class CohereEmbedder:
+    """Embedder using the Cohere Embed API (embed-english-v3.0 by default)."""
+
+    default_threshold: float = 0.85
+
+    def __init__(
+        self,
+        model_name: str = "embed-english-v3.0",
+        api_key: str | None = None,
+        input_type: str = "search_query",
+        client: Any = None,
+        dimensions: int = 1024,
+        **client_kwargs: Any,
+    ) -> None:
+        self.model_name = model_name
+        self.input_type = input_type
+        self.dimensions = dimensions
+        if client is not None:
+            self.client = client
+        else:
+            try:
+                import cohere
+
+                self.client = cohere.Client(api_key=api_key, **client_kwargs)
+            except ImportError:
+                raise ImportError(
+                    "The 'cohere' package is required for CohereEmbedder. "
+                    "Install it via: pip install 'semantic-cache[cohere]'"
+                )
+
+    def embed(self, text: str) -> np.ndarray:
+        _validate_text(text)
+        if not text.strip():
+            return np.zeros(self.dimensions, dtype=np.float32)
+        response = self.client.embed(
+            texts=[text],
+            model=self.model_name,
+            input_type=self.input_type,
+        )
+        embeddings = getattr(response, "embeddings", response)
+        vec = _normalize_vec(np.asarray(embeddings[0], dtype=np.float32))
+        return validate_embedding(vec, self.dimensions)
+
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        if not texts:
+            return []
+        for t in texts:
+            _validate_text(t)
+        response = self.client.embed(
+            texts=texts,
+            model=self.model_name,
+            input_type=self.input_type,
+        )
+        embeddings = getattr(response, "embeddings", response)
+        return [
+            validate_embedding(
+                _normalize_vec(np.asarray(vec, dtype=np.float32)), self.dimensions
+            )
+            for vec in embeddings
+        ]
+
+
+# ---------------------------------------------------------------------------
+# OllamaEmbedder
+# ---------------------------------------------------------------------------
+
+class OllamaEmbedder:
+    """Embedder using a local Ollama instance (nomic-embed-text by default)."""
+
+    default_threshold: float = 0.85
+
+    def __init__(
+        self,
+        model_name: str = "nomic-embed-text",
+        base_url: str = "http://localhost:11434",
+        dimensions: int | None = None,
+        timeout: float = 30.0,
+    ) -> None:
+        self.model_name = model_name
+        self.base_url = base_url.rstrip("/")
+        self.dimensions = dimensions
+        self.timeout = timeout
+
+    def _post_json(self, endpoint: str, data: dict[str, Any]) -> dict[str, Any]:
+        import json
+        import urllib.error
+        import urllib.request
+
+        url = f"{self.base_url}{endpoint}"
+        payload = json.dumps(data).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.URLError as exc:
+            raise ConnectionError(
+                f"Failed to connect to Ollama at {self.base_url}: {exc}"
+            ) from exc
+
+    def embed(self, text: str) -> np.ndarray:
+        _validate_text(text)
+        if not text.strip():
+            dim = self.dimensions or 768
+            return np.zeros(dim, dtype=np.float32)
+        try:
+            res = self._post_json("/api/embed", {"model": self.model_name, "input": text})
+            embeddings = res.get("embeddings")
+            if embeddings:
+                raw_vec = embeddings[0]
+            else:
+                raw_vec = res.get("embedding")
+        except Exception:
+            res = self._post_json("/api/embeddings", {"model": self.model_name, "prompt": text})
+            raw_vec = res.get("embedding")
+
+        if raw_vec is None:
+            raise RuntimeError(f"Ollama returned no embedding in response: {res}")
+        vec = _normalize_vec(np.asarray(raw_vec, dtype=np.float32))
+        if self.dimensions is None:
+            self.dimensions = len(vec)
+        return validate_embedding(vec, self.dimensions)
+
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        if not texts:
+            return []
+        for t in texts:
+            _validate_text(t)
+        try:
+            res = self._post_json("/api/embed", {"model": self.model_name, "input": texts})
+            embeddings = res.get("embeddings")
+            if embeddings and len(embeddings) == len(texts):
+                return [
+                    validate_embedding(
+                        _normalize_vec(np.asarray(vec, dtype=np.float32)), self.dimensions
+                    )
+                    for vec in embeddings
+                ]
+        except Exception:
+            pass
+        return [self.embed(t) for t in texts]
+
 

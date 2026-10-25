@@ -31,7 +31,7 @@ import logging
 import random
 import threading
 import time
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any
@@ -678,6 +678,7 @@ class SemanticCache:
         response: str,
         namespace: str | None = None,
         latency: float = 0.0,
+        ttl: float | None = None,
     ) -> None:
         """Store a response for *query*.
 
@@ -719,18 +720,19 @@ class SemanticCache:
             logger.debug("Zero embedding vector — skipping cache set")
             return
 
+        effective_ttl = self.ttl if ttl is None else ttl
         try:
             entry_id = self.store.add(
                 ns,
                 query,
                 vec,
                 response,
-                self.ttl,
+                effective_ttl,
                 query_hash=query_hash,
                 embedder=self._embedder_name,
             )
         except TypeError:
-            entry_id = self.store.add(ns, query, vec, response, self.ttl)
+            entry_id = self.store.add(ns, query, vec, response, effective_ttl)
 
         # Only retain latency for a bounded window to prevent unbounded growth.
         # Entries evicted from the store become unreachable, so we can prune
@@ -750,6 +752,7 @@ class SemanticCache:
         threshold: float | None = None,
         guard: bool | None = None,
         verify_always: bool | None = None,
+        ttl: float | None = None,
     ) -> CacheResult:
         """Return a cached result, or call *compute* and store the result.
 
@@ -831,7 +834,7 @@ class SemanticCache:
                     f"got {type(response).__name__!r}"
                 )
 
-            self.set(query, response, namespace, latency=elapsed)
+            self.set(query, response, namespace, latency=elapsed, ttl=ttl)
             result = CacheResult(response=response, hit=False)
         except Exception as exc:
             self.stats.errors += 1
@@ -898,6 +901,7 @@ class SemanticCache:
         threshold: float | None = None,
         guard: bool | None = None,
         verify_always: bool | None = None,
+        ttl: float | None = None,
     ) -> CacheResult:
         """Async equivalent of :meth:`get_or_compute`.
 
@@ -970,7 +974,7 @@ class SemanticCache:
             start = time.perf_counter()
             response = await compute_fresh()
             elapsed = time.perf_counter() - start
-            await asyncio.to_thread(self.set, query, response, ns, elapsed)
+            await asyncio.to_thread(self.set, query, response, ns, elapsed, ttl)
             result = CacheResult(response=response, hit=False)
             future.set_result(result)
             return result
@@ -1015,6 +1019,171 @@ class SemanticCache:
         return wrap
 
     # ------------------------------------------------------------------
+    # Async get / set / ask API
+    # ------------------------------------------------------------------
+
+    async def aget(
+        self,
+        query: str,
+        namespace: str | None = None,
+        bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ) -> CacheResult | None:
+        """Asynchronously look up *query* in the cache."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.get(
+                query,
+                namespace=namespace,
+                bypass=bypass,
+                threshold=threshold,
+                guard=guard,
+                verify_always=verify_always,
+            ),
+        )
+
+    async def aset(
+        self,
+        query: str,
+        response: str,
+        ttl: float | None = None,
+        namespace: str | None = None,
+    ) -> None:
+        """Asynchronously store *query* -> *response* in the cache."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: self.set(
+                query,
+                response,
+                ttl=ttl,
+                namespace=namespace,
+            ),
+        )
+
+    async def aask(
+        self,
+        prompt: str,
+        llm: Callable[[str], str] | AsyncCompute,
+        namespace: str | None = None,
+        **kwargs: Any,
+    ) -> str:
+        """Asynchronously ask a prompt, returning cached answer or computing with llm."""
+        if inspect.iscoroutinefunction(llm):
+            res = await self.async_get_or_compute(prompt, llm, namespace=namespace, **kwargs)
+            return res.response
+        else:
+            async def _async_compute(p: str) -> str:
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, lambda: llm(p))
+
+            res = await self.async_get_or_compute(
+                prompt, _async_compute, namespace=namespace, **kwargs
+            )
+            return res.response
+
+    # ------------------------------------------------------------------
+    # Streaming response caching
+    # ------------------------------------------------------------------
+
+    def get_or_compute_stream(
+        self,
+        query: str,
+        compute_stream: Callable[[str], Iterable[str]],
+        namespace: str | None = None,
+        ttl: float | None = None,
+        bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ) -> Iterator[str]:
+        """Stream cached response chunks or compute stream and cache full response."""
+        ns = _validate_namespace(namespace or self.namespace)
+        if self.enabled and not bypass:
+            cached = self.get(
+                query,
+                namespace=ns,
+                threshold=threshold,
+                guard=guard,
+                verify_always=verify_always,
+            )
+            if cached is not None and cached.hit:
+                yield cached.response
+                return
+
+        chunks: list[str] = []
+        try:
+            stream = compute_stream(query)
+            for chunk in stream:
+                chunks.append(chunk)
+                yield chunk
+        except Exception as exc:
+            self.stats.errors += 1
+            if self._on_error:
+                try:
+                    self._on_error(query, exc)
+                except Exception:
+                    pass
+            raise
+
+        full_response = "".join(chunks)
+        if self.enabled and not bypass and full_response:
+            try:
+                self.set(query, full_response, ttl=ttl, namespace=ns)
+            except Exception as exc:
+                logger.warning("Failed to cache streaming response: %s", exc)
+
+    async def async_get_or_compute_stream(
+        self,
+        query: str,
+        compute_stream: Callable[[str], AsyncIterable[str]],
+        namespace: str | None = None,
+        ttl: float | None = None,
+        bypass: bool = False,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ) -> AsyncIterator[str]:
+        """Async stream cached response chunks or compute async stream and cache full response."""
+        ns = _validate_namespace(namespace or self.namespace)
+        if self.enabled and not bypass:
+            cached = await self.aget(
+                query,
+                namespace=ns,
+                threshold=threshold,
+                guard=guard,
+                verify_always=verify_always,
+            )
+            if cached is not None and cached.hit:
+                yield cached.response
+                return
+
+        chunks: list[str] = []
+        try:
+            stream = compute_stream(query)
+            async for chunk in stream:
+                chunks.append(chunk)
+                yield chunk
+        except Exception as exc:
+            self.stats.errors += 1
+            if self._on_error:
+                try:
+                    self._on_error(query, exc)
+                except Exception:
+                    pass
+            raise
+
+        full_response = "".join(chunks)
+        if self.enabled and not bypass and full_response:
+            try:
+                await self.aset(query, full_response, ttl=ttl, namespace=ns)
+            except Exception as exc:
+                logger.warning("Failed to cache streaming response: %s", exc)
+
+    # ------------------------------------------------------------------
     # Management helpers
     # ------------------------------------------------------------------
 
@@ -1043,3 +1212,101 @@ class SemanticCache:
         """Return per-namespace entry counts from the store."""
         ns = _validate_namespace(namespace or self.namespace)
         return self.store.namespace_stats(ns)
+
+
+# ---------------------------------------------------------------------------
+# Standalone @cached decorator
+# ---------------------------------------------------------------------------
+
+_DEFAULT_GLOBAL_CACHE: SemanticCache | None = None
+
+
+def _get_default_cache() -> SemanticCache:
+    global _DEFAULT_GLOBAL_CACHE
+    if _DEFAULT_GLOBAL_CACHE is None:
+        _DEFAULT_GLOBAL_CACHE = SemanticCache()
+    return _DEFAULT_GLOBAL_CACHE
+
+
+def cached(
+    cache: SemanticCache | None = None,
+    namespace: str | None = None,
+    ttl: float | None = None,
+    threshold: float | None = None,
+    guard: bool | None = None,
+    verify_always: bool | None = None,
+    key_fn: Callable[..., str] | None = None,
+):
+    """Decorator to cache results of sync or async functions using semantic cache.
+
+    Can decorate either:
+        @cached
+        def ask_llm(prompt: str) -> str: ...
+
+        @cached(cache=my_cache, ttl=300)
+        async def ask_llm_async(prompt: str) -> str: ...
+    """
+    import functools
+
+    def decorator(fn: Callable) -> Callable:
+        target_cache = cache if cache is not None else _get_default_cache()
+
+        def extract_query(
+            args: tuple[Any, ...], kwargs: dict[str, Any]
+        ) -> tuple[str, bool, dict[str, Any]]:
+            call_kwargs = dict(kwargs)
+            bypass = bool(call_kwargs.pop("bypass", False))
+            if key_fn is not None:
+                q = key_fn(*args, **call_kwargs)
+            elif "prompt" in call_kwargs:
+                q = str(call_kwargs["prompt"])
+            elif "query" in call_kwargs:
+                q = str(call_kwargs["query"])
+            elif args:
+                q = str(args[0])
+            else:
+                raise ValueError("Could not extract query string for @cached function")
+            return q, bypass, call_kwargs
+
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                q, bypass, call_kwargs = extract_query(args, kwargs)
+                res = await target_cache.async_get_or_compute(
+                    q,
+                    lambda _: fn(*args, **call_kwargs),
+                    namespace=namespace,
+                    bypass=bypass,
+                    threshold=threshold,
+                    guard=guard,
+                    verify_always=verify_always,
+                )
+                return res.response
+
+            return async_wrapper
+        else:
+            @functools.wraps(fn)
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+                q, bypass, call_kwargs = extract_query(args, kwargs)
+                res = target_cache.get_or_compute(
+                    q,
+                    lambda _: fn(*args, **call_kwargs),
+                    namespace=namespace,
+                    ttl=ttl,
+                    bypass=bypass,
+                    threshold=threshold,
+                    guard=guard,
+                    verify_always=verify_always,
+                )
+                return res.response
+
+            return sync_wrapper
+
+    # If called without arguments: @cached
+    if callable(cache):
+        actual_fn = cache
+        cache = None
+        return decorator(actual_fn)
+
+    return decorator
+

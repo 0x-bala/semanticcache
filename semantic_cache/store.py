@@ -544,6 +544,10 @@ class SQLiteStore:
     # Writes
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _exact_hash(query: str) -> str:
+        return hashlib.sha256(exact_match_key(query).encode("utf-8")).hexdigest()
+
     def add(
         self,
         namespace: str,
