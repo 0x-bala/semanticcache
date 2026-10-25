@@ -402,5 +402,242 @@
     "false_accepts": [],
     "quota_details": null,
     "note": "tiny sample, not statistically meaningful. Google Free Tier limits gemini-2.5-flash generateContent requests to 20/day."
+  },
+  "part4_shadow_mode": {
+    "status": "COMPLETED",
+    "stream_size": 600,
+    "seed_corpus_size": 10000,
+    "shadow_rate": 1.0,
+    "total_queries": 600,
+    "cache_hits": 133,
+    "cache_misses": 467,
+    "shadow_evaluations": 133,
+    "shadow_matches": 73,
+    "shadow_mismatches": 60,
+    "shadow_errors": 0,
+    "shadow_error_rate": 0.0,
+    "estimated_false_hit_rate": 0.4511,
+    "wilson_95_ci": [
+      0.3691,
+      0.5359
+    ],
+    "rule_of_three_bound": null,
+    "true_false_hit_count": 21,
+    "true_false_hit_rate": 0.1579,
+    "delta_estimate_vs_true": 0.2932,
+    "total_mismatch_records": 21,
+    "mismatches": [
+      {
+        "query": "In the real world can men and women ever be equal?",
+        "matched_query": "Can men and women ever be equal?",
+        "cached_response": "Canonical response to: Can men and women ever be equal?",
+        "live_response": "Canonical response to: In the real world can men and women ever be equal?",
+        "similarity": 0.9543,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How do CBSE board calculate 9th Sa exams grade?",
+        "matched_query": "How does CBSE calculate SA grades for 9th and 10th classes?",
+        "cached_response": "Canonical response to: How does CBSE calculate SA grades for 9th and 10th classes?",
+        "live_response": "Canonical response to: How do CBSE board calculate 9th Sa exams grade?",
+        "similarity": 0.9264,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How can I use Omegle on my iPod Touch and how is it compared to using Lollichat?",
+        "matched_query": "How can I use Omegle on my iPod Touch and how is it compared to using Roundchat?",
+        "cached_response": "Canonical response to: How can I use Omegle on my iPod Touch and how is it compared to using Roundchat?",
+        "live_response": "Canonical response to: How can I use Omegle on my iPod Touch and how is it compared to using Lollichat?",
+        "similarity": 0.9075,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Mono County California area?",
+        "matched_query": "Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Fresno County California area?",
+        "cached_response": "Canonical response to: Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Fresno County California area?",
+        "live_response": "Canonical response to: Which are the best Drug or Alcohol Rehab, Detox and Recovery Program Centers in the Mono County California area?",
+        "similarity": 0.9655,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What does \"grit\" mean?",
+        "matched_query": "What is grit?",
+        "cached_response": "Canonical response to: What is grit?",
+        "live_response": "Canonical response to: What does \"grit\" mean?",
+        "similarity": 0.9306,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What are the rules and regulations when visiting an inmate at Valdosta prison and how does it compare to prisons in Florida?",
+        "matched_query": "What are the rules and regulations when visiting an inmate at Valdosta prison and how does it compare to prisons in Colorado?",
+        "cached_response": "Canonical response to: What are the rules and regulations when visiting an inmate at Valdosta prison and how does it compare to prisons in Colorado?",
+        "live_response": "Canonical response to: What are the rules and regulations when visiting an inmate at Valdosta prison and how does it compare to prisons in Florida?",
+        "similarity": 0.9185,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How do you reset your Yahoo! password?",
+        "matched_query": "How do you reset your Yahoo password?",
+        "cached_response": "Canonical response to: How do you reset your Yahoo password?",
+        "live_response": "Canonical response to: How do you reset your Yahoo! password?",
+        "similarity": 0.9553,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What are the most important and powerful questions in your life experience with which you have ever coped? Which question changed your life most?",
+        "matched_query": "What are the most important and powerful questions in your life experience with which you have ever coped? Which question changed your life most?",
+        "cached_response": "Canonical response to: What are the most important and powerful questions in your life experience with which you have ever coped? Which question changed your life most?",
+        "live_response": "Canonical response to: What are the most important and powerful questions in your life experience with which you have ever coped? Which question changed your life most?",
+        "similarity": 1.0,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What is \u2018Edgware\u2019 and how does the lifestyle compare to the London Borough of Brent?",
+        "matched_query": "What is \u2018Edgware\u2019 and how does the lifestyle compare to the London Borough of Brent?",
+        "cached_response": "Canonical response to: What is \u2018Edgware\u2019 and how does the lifestyle compare to the London Borough of Brent?",
+        "live_response": "Canonical response to: What is \u2018Edgware\u2019 and how does the lifestyle compare to the London Borough of Brent?",
+        "similarity": 1.0,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How should one prepare for campus placement?",
+        "matched_query": "How should one prepare for campus placements?",
+        "cached_response": "Canonical response to: How should one prepare for campus placements?",
+        "live_response": "Canonical response to: How should one prepare for campus placement?",
+        "similarity": 0.9936,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What are some life hacks for students?",
+        "matched_query": "What are some life hacks for college students?",
+        "cached_response": "Canonical response to: What are some life hacks for college students?",
+        "live_response": "Canonical response to: What are some life hacks for students?",
+        "similarity": 0.9301,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Do pilots have sex with the air hostesses?",
+        "matched_query": "Do air-hostesses have sex with passengers in flight?",
+        "cached_response": "Canonical response to: Do air-hostesses have sex with passengers in flight?",
+        "live_response": "Canonical response to: Do pilots have sex with the air hostesses?",
+        "similarity": 0.925,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Why did Germany lose WWII?",
+        "matched_query": "Why did Germany lose WWII?",
+        "cached_response": "Canonical response to: Why did Germany lose WWII?",
+        "live_response": "Canonical response to: Why did Germany lose WWII?",
+        "similarity": 1.0,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Which cleaning service company is best in South Australia?",
+        "matched_query": "Which is the best cleaning service company in Australia?",
+        "cached_response": "Canonical response to: Which is the best cleaning service company in Australia?",
+        "live_response": "Canonical response to: Which cleaning service company is best in South Australia?",
+        "similarity": 0.9527,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What are the best gifts ideas for sisters to give on this Raksha Bandhan?",
+        "matched_query": "What is the best Gift by a sister to India on Raksha Bandhan?",
+        "cached_response": "Canonical response to: What is the best Gift by a sister to India on Raksha Bandhan?",
+        "live_response": "Canonical response to: What are the best gifts ideas for sisters to give on this Raksha Bandhan?",
+        "similarity": 0.9125,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+        "matched_query": "Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+        "cached_response": "Canonical response to: Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+        "live_response": "Canonical response to: Has Ancient History been scientifically tested? Is it all real? Did it happen differently than we were told it did? Did it even happen at all?",
+        "similarity": 1.0,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How are peanut butter and jelly sandwiches good for you?",
+        "matched_query": "How are peanut butter and jelly sandwiches good for you?",
+        "cached_response": "Canonical response to: How are peanut butter and jelly sandwiches good for you?",
+        "live_response": "Canonical response to: How are peanut butter and jelly sandwiches good for you?",
+        "similarity": 1.0,
+        "guard_verdict": "ACCEPT",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "Who is the best politician?",
+        "matched_query": "Who do you think is the best politician in history?",
+        "cached_response": "Canonical response to: Who do you think is the best politician in history?",
+        "live_response": "Canonical response to: Who is the best politician?",
+        "similarity": 0.9151,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How do you get a job with a criminal record?",
+        "matched_query": "How do I get police job with criminal record?",
+        "cached_response": "Canonical response to: How do I get police job with criminal record?",
+        "live_response": "Canonical response to: How do you get a job with a criminal record?",
+        "similarity": 0.9136,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "How do I reset my Gmail password when I don't remember my recovery information?",
+        "matched_query": "How do I recover my Gmail password when I don't remember my recovery mail ID?",
+        "cached_response": "Canonical response to: How do I recover my Gmail password when I don't remember my recovery mail ID?",
+        "live_response": "Canonical response to: How do I reset my Gmail password when I don't remember my recovery information?",
+        "similarity": 0.9341,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      },
+      {
+        "query": "What does it mean when I dream about somebody dying?",
+        "matched_query": "What does it mean when I dreamed of someone and said they're dying?",
+        "cached_response": "Canonical response to: What does it mean when I dreamed of someone and said they're dying?",
+        "live_response": "Canonical response to: What does it mean when I dream about somebody dying?",
+        "similarity": 0.9343,
+        "guard_verdict": "VERIFY",
+        "ground_truth_label": 0,
+        "verdict": "FALSE_HIT"
+      }
+    ],
+    "note": "Audited with 100% shadow sampling (shadow_rate=1.0). Evaluated on real QQP prompt stream using canonical label-oracle comparator. Live Gemini generative LLM calls exhausted on Google Free Tier daily quota (HTTP 429)."
   }
 }
