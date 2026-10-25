@@ -225,3 +225,37 @@ class TestGuardRules:
             f"Expected ACCEPT for {new_q!r} ~ {cached_q!r}, got {res.verdict} ({res.reason})"
         )
 
+    def test_guard_rejects_critical_pairs_after_optimizations(self) -> None:
+        from semantic_cache.cache import SemanticCache
+        from semantic_cache.embedders import HashingEmbedder
+
+        critical_pairs = [
+            ("What is C++?", "What is C#?"),
+            ("Is x>5?", "Is x<5?"),
+            ("Convert 10 km to miles", "Convert 10 miles to km"),
+        ]
+
+        cache = SemanticCache(embedder=HashingEmbedder(), threshold=0.85)
+
+        for q1, q2 in critical_pairs:
+            # Direct guard rule verification
+            res1 = check_match(q1, q2)
+            assert res1.verdict == GuardVerdict.REJECT, (
+                f"check_match({q1!r}, {q2!r}) unexpectedly returned {res1.verdict}"
+            )
+            res2 = check_match(q2, q1)
+            assert res2.verdict == GuardVerdict.REJECT, (
+                f"check_match({q2!r}, {q1!r}) unexpectedly returned {res2.verdict}"
+            )
+
+            # End-to-end SemanticCache lookup verification
+            cache.set(q1, f"Response to {q1}")
+            lookup = cache.get(q2)
+            assert lookup is None, (
+                f"SemanticCache lookup for {q2!r} returned {lookup} instead of cache miss"
+            )
+            assert cache.stats.guard_rejects >= 1, (
+                "Expected stats.guard_rejects to increment on rejected pair"
+            )
+
+

@@ -100,6 +100,8 @@ class Embedder(Protocol):
 
     def embed(self, text: str) -> np.ndarray: ...
 
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]: ...
+
 
 # ---------------------------------------------------------------------------
 # HashingEmbedder
@@ -169,6 +171,10 @@ class HashingEmbedder:
         norm = float(np.linalg.norm(vec))
         return (vec / norm).astype(np.float32) if norm > 0.0 else vec
 
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Return unit-normalised float32 vectors for a batch of texts."""
+        return [self.embed(t) for t in texts]
+
 
 # ---------------------------------------------------------------------------
 # SentenceTransformerEmbedder
@@ -208,6 +214,14 @@ class SentenceTransformerEmbedder:
         vec = np.asarray(v, dtype=np.float32)
         # Validate before returning
         return validate_embedding(vec)
+
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Embed a batch of texts using SentenceTransformer."""
+        for t in texts:
+            _validate_text(t)
+        v = self.model.encode(texts, normalize_embeddings=True)
+        vecs = np.asarray(v, dtype=np.float32)
+        return [validate_embedding(vec) for vec in vecs]
 
 
 # ---------------------------------------------------------------------------

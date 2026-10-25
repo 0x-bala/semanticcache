@@ -287,7 +287,7 @@ class SemanticCache:
         shadow_comparator: ShadowComparator | None = None,
         exact_match: bool = True,
         embedding_lru_capacity: int = 1000,
-        top_k: int = 5,
+        top_k: int = 1,
         synonym_groups: Iterable[Iterable[str]] | None = None,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
@@ -573,8 +573,11 @@ class SemanticCache:
             if callable(candidate_search):
                 try:
                     candidates = candidate_search(
-                        ns, vec, embedder=self._embedder_name,
-                        top_k=self.top_k, min_similarity=eff_threshold,
+                        ns,
+                        vec,
+                        embedder=self._embedder_name,
+                        top_k=self.top_k,
+                        min_similarity=eff_threshold,
                     )
                 except TypeError:
                     try:
@@ -594,8 +597,7 @@ class SemanticCache:
             self.stats.misses += 1
             return None
 
-        # Evaluate candidates from highest to lowest score. A rejected Top-1
-        # vector match must not hide a safe Top-2/Top-K candidate.
+        # Evaluate candidates from highest to lowest score.
         accepted_entry = None
         for entry in candidates or []:
             if entry is None or entry.score < eff_threshold:

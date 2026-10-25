@@ -160,3 +160,7 @@ class GeminiEmbedder(GeminiClient):
         vector = validate_embedding(vector)
         norm = float(np.linalg.norm(vector))
         return vector / norm if norm else vector
+
+    def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
+        """Embed a batch of texts using Gemini."""
+        return [self.embed(t) for t in texts]

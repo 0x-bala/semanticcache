@@ -56,6 +56,13 @@ class Entry:
     query: str
     response: str
     score: float = 0.0
+    expires_at: float | None = None
+    hits: int = 0
+    last_hit_at: float | None = None
+    created_at: float = 0.0
+    namespace: str = ""
+    embedder: str = ""
+    query_hash: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -91,24 +98,74 @@ def _safe_load_blob(blob: bytes, expected_dim: int) -> np.ndarray | None:
 
 
 # ---------------------------------------------------------------------------
-# VectorIndex (pre-allocated doubling capacity index)
+# VectorIndex with optional ANN backend (FAISS / hnswlib)
 # ---------------------------------------------------------------------------
 
 
+def _build_ann_index(dim: int, matrix: np.ndarray, backend: str | None = None) -> Any:
+    """Instantiate and populate an ANN index if an engine is requested."""
+    if not backend:
+        return None
+    if backend in ("auto", "faiss"):
+        try:
+            import faiss
+
+            index = faiss.IndexHNSWFlat(dim, 32, faiss.METRIC_INNER_PRODUCT)
+            index.hnsw.efSearch = 64
+            if matrix.shape[0] > 0:
+                index.add(np.ascontiguousarray(matrix, dtype=np.float32))
+            return index
+        except ImportError:
+            if backend == "faiss":
+                raise
+    if backend in ("auto", "hnswlib"):
+        try:
+            import hnswlib
+
+            index = hnswlib.Index(space="cosine", dim=dim)
+            count = matrix.shape[0]
+            index.init_index(max_elements=max(1000, count * 2), ef_construction=100, M=16)
+            if count > 0:
+                index.add_items(matrix, np.arange(count))
+            return index
+        except ImportError:
+            if backend == "hnswlib":
+                raise
+    return None
+
+
 class VectorIndex:
-    """In-memory vector index with capacity-doubling geometric growth.
+    """In-memory vector index with capacity-doubling growth and optional ANN backend.
 
     Pre-allocates an initial matrix capacity and doubles it whenever the
-    capacity is reached, reducing per-insert allocations and copies from O(N)
-    to O(1) amortized.
+    capacity is reached. Above `ann_threshold`, switches to an ANN backend
+    (FAISS / hnswlib) if available; uses brute-force matrix multiplication otherwise.
     """
 
-    __slots__ = ("ids", "matrix", "count", "dim")
+    __slots__ = (
+        "ids",
+        "matrix",
+        "count",
+        "dim",
+        "ann_threshold",
+        "ann_backend",
+        "ann_index",
+    )
 
-    def __init__(self, ids: list[int], matrix: np.ndarray, dim: int) -> None:
+    def __init__(
+        self,
+        ids: list[int],
+        matrix: np.ndarray,
+        dim: int,
+        ann_threshold: int = 10_000,
+        ann_backend: str | None = None,
+    ) -> None:
         self.ids = list(ids)
         self.count = len(self.ids)
         self.dim = dim
+        self.ann_threshold = ann_threshold
+        self.ann_backend = ann_backend
+        self.ann_index: Any = None
         capacity = max(16, self.count)
         if matrix.shape[0] < capacity:
             self.matrix = np.zeros((capacity, dim), dtype=np.float32)
@@ -116,6 +173,9 @@ class VectorIndex:
                 self.matrix[: self.count] = matrix[: self.count]
         else:
             self.matrix = np.ascontiguousarray(matrix, dtype=np.float32)
+
+        if self.count >= self.ann_threshold:
+            self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
 
     def __iter__(self) -> Iterator[Any]:
         """Allows unpacking as `ids, mat = index` for backward compatibility."""
@@ -147,28 +207,104 @@ class VectorIndex:
         self.ids.append(entry_id)
         self.count += 1
 
+        if self.count >= self.ann_threshold:
+            if self.ann_index is None:
+                self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
+            else:
+                try:
+                    if hasattr(self.ann_index, "add"):
+                        self.ann_index.add(flat_vec.reshape(1, -1).astype(np.float32))
+                except Exception:
+                    self.ann_index = None
+
     def active_matrix(self) -> np.ndarray:
         return self.matrix[: self.count]
 
     def remove_ids(self, ids_to_remove: set[int]) -> None:
-        """In-place removal of evicted IDs with array compaction.
-
-        Compacts the matrix in memory using slice assignment, avoiding full
-        re-allocation or database reload.
-        """
+        """In-place removal of evicted IDs with array compaction."""
         if not ids_to_remove or self.count == 0:
             return
         keep_indices = [i for i, eid in enumerate(self.ids) if eid not in ids_to_remove]
         if len(keep_indices) == self.count:
-            return  # None of the evicted IDs were in this index
+            return
         if not keep_indices:
             self.ids.clear()
             self.count = 0
+            self.ann_index = None
             return
         # Compact matrix rows in-place
         self.matrix[: len(keep_indices)] = self.matrix[keep_indices]
         self.ids = [self.ids[i] for i in keep_indices]
         self.count = len(self.ids)
+        if self.ann_index is not None:
+            if self.count >= self.ann_threshold:
+                self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
+            else:
+                self.ann_index = None
+
+    def search(
+        self,
+        query_vec: np.ndarray,
+        top_k: int = 5,
+        min_similarity: float = -1.0,
+    ) -> tuple[list[int], list[float]]:
+        """Search nearest vectors using ANN backend if enabled/built, otherwise brute force."""
+        if not self.ids or self.count == 0:
+            return [], []
+
+        if self.ann_index is not None and self.count >= self.ann_threshold:
+            try:
+                q = query_vec.reshape(1, -1).astype(np.float32)
+                scores, indices = self.ann_index.search(q, top_k)
+                res_ids: list[int] = []
+                res_scores: list[float] = []
+                for idx, score in zip(indices[0], scores[0]):
+                    if 0 <= idx < len(self.ids):
+                        s = float(score)
+                        if s >= min_similarity:
+                            res_ids.append(self.ids[int(idx)])
+                            res_scores.append(s)
+                return res_ids, res_scores
+            except Exception as exc:
+                logger.debug("ANN search failed, falling back to brute force: %s", exc)
+
+        # Brute force cosine / dot product
+        scores = self.active_matrix() @ query_vec
+        eligible = np.flatnonzero(scores >= float(min_similarity))
+        if eligible.size == 0:
+            return [], []
+        order = eligible[np.argsort(scores[eligible])[::-1][:top_k]]
+        return [self.ids[int(i)] for i in order], [float(scores[int(i)]) for i in order]
+
+
+class _DBProxy:
+    """Proxy around sqlite3.Connection that flushes pending writes before execution."""
+
+    def __init__(self, conn: sqlite3.Connection, store: SQLiteStore) -> None:
+        self._conn = conn
+        self._store = store
+
+    def execute(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        self._store.flush()
+        return self._conn.execute(*args, **kwargs)
+
+    def executemany(self, *args: Any, **kwargs: Any) -> sqlite3.Cursor:
+        self._store.flush()
+        return self._conn.executemany(*args, **kwargs)
+
+    def commit(self) -> None:
+        self._store.flush()
+        return self._conn.commit()
+
+    def rollback(self) -> None:
+        return self._conn.rollback()
+
+    def close(self) -> None:
+        self._store.flush()
+        return self._conn.close()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._conn, name)
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +335,10 @@ class SQLiteStore:
         path: str = ":memory:",
         embedding_dim: int | None = None,
         max_entries: int | None = None,
+        batch_writes: bool = True,
+        ann_threshold: int = 10_000,
+        ann_backend: str | None = None,
+        eviction_policy: str = "lru",
     ) -> None:
         if embedding_dim is not None and embedding_dim < 1:
             raise ValueError("embedding_dim must be a positive integer or None")
@@ -207,15 +347,26 @@ class SQLiteStore:
         self._path = path
         self._embedding_dim = embedding_dim
         self._max_entries = max_entries
-        self._lock = threading.Lock()
+        self._batch_writes = batch_writes
+        self._ann_threshold = ann_threshold
+        self._ann_backend = ann_backend
+        self._eviction_policy = eviction_policy.lower()
+        if self._eviction_policy not in ("lru", "lfu", "fifo"):
+            raise ValueError(f"Invalid eviction_policy: {eviction_policy!r}")
+        self._lock = threading.RLock()
+        self._flushing = False
+        self._uncommitted_writes = 0
+        self._pending_hits: dict[int, float] = {}
 
         # A generous busy timeout lets concurrent processes queue for write locks
         # (for example two app instances starting against the same cache file).
-        self.db = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
+        raw_conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
+        self._raw_db = raw_conn
+        self.db: Any = _DBProxy(raw_conn, self)
         try:
             self._enable_wal()
-            self.db.execute("PRAGMA foreign_keys=ON")
-            self.db.execute(
+            self._raw_db.execute("PRAGMA foreign_keys=ON")
+            self._raw_db.execute(
                 """CREATE TABLE IF NOT EXISTS entries (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     namespace   TEXT    NOT NULL,
@@ -235,48 +386,89 @@ class SQLiteStore:
             # 0 = not migrated, 1 = migration in progress, 2 = migration complete.
             self._run_safe_migration()
 
-            self.db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
-            self.db.execute(
+            self._raw_db.execute("CREATE INDEX IF NOT EXISTS ix_ns ON entries(namespace)")
+            self._raw_db.execute(
                 "CREATE INDEX IF NOT EXISTS ix_ns_exp ON entries(namespace, expires_at)"
             )
-            self.db.execute(
+            self._raw_db.execute(
                 "CREATE INDEX IF NOT EXISTS ix_ns_hash ON entries(namespace, query_hash)"
             )
-            self.db.execute(
+            self._raw_db.execute(
                 "CREATE INDEX IF NOT EXISTS ix_ns_emb ON entries(namespace, embedder)"
             )
-            self.db.execute(
+            self._raw_db.execute(
                 "CREATE INDEX IF NOT EXISTS idx_entries_exact "
                 "ON entries(namespace, query_hash, embedder)"
             )
-            self.db.commit()
+            self._raw_db.commit()
         except BaseException:
             try:
-                self.db.close()
+                self._raw_db.close()
             except Exception:
                 pass
             raise
 
-        # index_key -> VectorIndex
+        # In-memory index structures for zero-disk lookups
+        self._entries: dict[int, Entry] = {}
+        self._exact_index: dict[tuple[str, str, str], int] = {}
+        self._entries_loaded: set[str] = set()
         self._index: dict[str, VectorIndex] = {}
 
-    def _enable_wal(self) -> None:
-        """Switch the database to WAL mode without racing other processes.
+        self._stop_event = threading.Event()
+        self._writer_thread: threading.Thread | None = None
+        if self._batch_writes:
+            self._writer_thread = threading.Thread(
+                target=self._writer_loop,
+                name="semantic-cache-db-writer",
+                daemon=True,
+            )
+            self._writer_thread.start()
 
-        Changing ``journal_mode`` needs an exclusive lock, and SQLite may raise
-        "database is locked" immediately instead of waiting for the busy timeout
-        when another process is opening the same file.  WAL mode is persistent, so
-        we first check whether it is already on, and retry briefly otherwise.  WAL
-        is only a performance optimization: if it cannot be enabled, the default
-        journal mode is kept and the store still works.
-        """
+    def _writer_loop(self) -> None:
+        while not self._stop_event.wait(0.05):
+            try:
+                self.flush()
+            except Exception:
+                logger.debug("Error in background writer loop", exc_info=True)
+
+    def _flush_unlocked(self) -> None:
+        if self._flushing or getattr(self, "_raw_db", None) is None:
+            return
+        self._flushing = True
+        try:
+            hits_to_flush = []
+            if self._pending_hits:
+                hits_to_flush = list(self._pending_hits.items())
+                self._pending_hits.clear()
+                if self._raw_db is not None:
+                    self._raw_db.executemany(
+                        "UPDATE entries SET hits = hits + 1, last_hit_at = ? WHERE id = ?",
+                        [(ts, eid) for eid, ts in hits_to_flush],
+                    )
+            if (self._uncommitted_writes > 0 or hits_to_flush) and self._raw_db is not None:
+                self._raw_db.commit()
+                self._uncommitted_writes = 0
+        finally:
+            self._flushing = False
+
+    def flush(self) -> None:
+        """Flush pending queued inserts and hit updates to SQLite."""
+        lock = getattr(self, "_lock", None)
+        if lock is not None:
+            with lock:
+                self._flush_unlocked()
+        else:
+            self._flush_unlocked()
+
+    def _enable_wal(self) -> None:
+        """Switch the database to WAL mode without racing other processes."""
         if self._path == ":memory:":
             return
         for attempt in range(40):
             try:
-                mode = self.db.execute("PRAGMA journal_mode").fetchone()[0]
+                mode = self._raw_db.execute("PRAGMA journal_mode").fetchone()[0]
                 if str(mode).lower() != "wal":
-                    self.db.execute("PRAGMA journal_mode=WAL")
+                    self._raw_db.execute("PRAGMA journal_mode=WAL")
                 return
             except sqlite3.OperationalError as exc:
                 message = str(exc).lower()
@@ -286,17 +478,10 @@ class SQLiteStore:
         logger.warning("Could not enable WAL mode (database busy); using the default journal mode")
 
     def _run_safe_migration(self) -> None:
-        """Run schema migration with transactional concurrency lock via BEGIN IMMEDIATE.
-
-        Uses SQLite's ``BEGIN IMMEDIATE`` to acquire an exclusive write lock across
-        all processes. Re-checks ``PRAGMA user_version`` inside the transaction
-        so that concurrent processes see the completed migration and exit safely
-        without issuing redundant ALTER TABLE statements.
-        """
+        """Run schema migration with transactional concurrency lock via BEGIN IMMEDIATE."""
         import time as _time
 
-        # Fast path check outside transaction
-        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        version = self._raw_db.execute("PRAGMA user_version").fetchone()[0]
         if version >= 2:
             return
 
@@ -305,13 +490,12 @@ class SQLiteStore:
 
         for attempt in range(max_attempts):
             try:
-                self.db.execute("BEGIN IMMEDIATE")
+                self._raw_db.execute("BEGIN IMMEDIATE")
                 break
             except sqlite3.OperationalError as exc:
                 if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-                    # Another process is migrating — wait and check if it finished
                     _time.sleep(poll_interval)
-                    v = self.db.execute("PRAGMA user_version").fetchone()[0]
+                    v = self._raw_db.execute("PRAGMA user_version").fetchone()[0]
                     if v >= 2:
                         return
                     continue
@@ -322,22 +506,22 @@ class SQLiteStore:
             )
 
         try:
-            # Re-check user_version inside the immediate transaction
-            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            version = self._raw_db.execute("PRAGMA user_version").fetchone()[0]
             if version >= 2:
-                self.db.execute("COMMIT")
+                self._raw_db.execute("COMMIT")
                 return
 
             existing_cols = {
-                row[1] for row in self.db.execute("PRAGMA table_info(entries)").fetchall()
+                row[1] for row in self._raw_db.execute("PRAGMA table_info(entries)").fetchall()
             }
             if "query_hash" not in existing_cols:
-                self.db.execute("ALTER TABLE entries ADD COLUMN query_hash TEXT")
+                self._raw_db.execute("ALTER TABLE entries ADD COLUMN query_hash TEXT")
             if "embedder" not in existing_cols:
-                self.db.execute("ALTER TABLE entries ADD COLUMN embedder TEXT NOT NULL DEFAULT ''")
+                self._raw_db.execute(
+                    "ALTER TABLE entries ADD COLUMN embedder TEXT NOT NULL DEFAULT ''"
+                )
 
-            # Backfill query_hash for legacy rows where missing
-            unhashed = self.db.execute(
+            unhashed = self._raw_db.execute(
                 "SELECT id, query FROM entries WHERE query_hash IS NULL OR query_hash = ''"
             ).fetchall()
             if unhashed:
@@ -345,14 +529,13 @@ class SQLiteStore:
                     (hashlib.sha256(exact_match_key(q).encode("utf-8")).hexdigest(), rid)
                     for rid, q in unhashed
                 ]
-                self.db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
+                self._raw_db.executemany("UPDATE entries SET query_hash = ? WHERE id = ?", updates)
 
-            # Mark migration complete and commit
-            self.db.execute("PRAGMA user_version = 2")
-            self.db.execute("COMMIT")
+            self._raw_db.execute("PRAGMA user_version = 2")
+            self._raw_db.execute("COMMIT")
         except BaseException:
             try:
-                self.db.execute("ROLLBACK")
+                self._raw_db.execute("ROLLBACK")
             except Exception:
                 pass
             raise
@@ -371,7 +554,7 @@ class SQLiteStore:
         query_hash: str | None = None,
         embedder: str = "",
     ) -> int:
-        """Insert a new cache entry.  Returns the new entry ID."""
+        """Insert a new cache entry. Returns the new entry ID."""
         _validate_namespace(namespace)
         _validate_ttl(ttl)
         embedding = validate_embedding(embedding, self._embedding_dim)
@@ -387,7 +570,16 @@ class SQLiteStore:
             query_hash = hashlib.sha256(exact_match_key(query).encode("utf-8")).hexdigest()
 
         with self._lock:
-            cur = self.db.execute(
+            index_keys = [namespace]
+            if embedder:
+                index_keys.append(f"{namespace}::{embedder}")
+
+            for ikey in index_keys:
+                if ikey not in self._index:
+                    self._load(namespace, embedder if ikey != namespace else None)
+
+            expires_at = now + ttl if ttl else None
+            cur = self._raw_db.execute(
                 """INSERT INTO entries
                    (namespace, query, embedding, response, created_at,
                     expires_at, query_hash, embedder)
@@ -398,70 +590,85 @@ class SQLiteStore:
                     blob,
                     response,
                     now,
-                    now + ttl if ttl else None,
+                    expires_at,
                     query_hash,
                     embedder,
                 ),
             )
-            self.db.commit()
-            entry_id: int = cur.lastrowid  # type: ignore[assignment]
+            entry_id: int = cur.lastrowid
+            self._uncommitted_writes += 1
+            if not self._batch_writes:
+                self._raw_db.commit()
+                self._uncommitted_writes = 0
 
-            # Incremental index update: append vector using geometric doubling growth
-            index_keys = [namespace]
-            if embedder:
-                index_keys.append(f"{namespace}::{embedder}")
+            entry = Entry(
+                id=entry_id,
+                query=query,
+                response=response,
+                score=0.0,
+                expires_at=expires_at,
+                hits=0,
+                last_hit_at=None,
+                created_at=now,
+                namespace=namespace,
+                embedder=embedder,
+                query_hash=query_hash,
+            )
+            self._entries[entry_id] = entry
+            self._exact_index[(namespace, query_hash, embedder)] = entry_id
 
             for ikey in index_keys:
                 if ikey in self._index:
                     self._index[ikey].append(entry_id, embedding)
 
             if self._max_entries is not None:
-                self._evict_lru_if_needed()
+                self._evict_if_needed()
 
         logger.debug("cache.add namespace=%r id=%d", namespace, entry_id)
         return entry_id
 
-    def _evict_lru_if_needed(self) -> None:
-        """Batch-evict the least-recently-used entries down to 90% capacity.
-
-        Caller must hold ``self._lock``.
-
-        Notes
-        -----
-        - Evicts in batches down to 90% of ``max_entries`` to amortize eviction
-          overhead across subsequent inserts.
-        - Uses portable SQL (``CASE WHEN last_hit_at IS NULL THEN 0 ELSE 1 END``)
-          to ensure compatibility with SQLite versions prior to 3.30.0 (which first
-          introduced ``NULLS FIRST`` syntax in October 2019).
-        - Compacts in-memory vector matrices in-place via ``VectorIndex.remove_ids``
-          rather than invalidating and reloading vectors from disk.
-        """
-        total = self.db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    def _evict_if_needed(self) -> None:
+        """Batch-evict entries according to eviction policy down to 90% capacity."""
+        self.flush()
+        total = self._raw_db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
         if self._max_entries is not None and total > self._max_entries:
             target_count = max(0, min(self._max_entries - 1, int(self._max_entries * 0.90)))
             entries_to_evict = total - target_count
 
-            cur = self.db.execute(
-                """SELECT id FROM entries
-                   ORDER BY COALESCE(last_hit_at, created_at) ASC
+            if self._eviction_policy == "lfu":
+                order_by = "hits ASC, created_at ASC"
+            elif self._eviction_policy == "fifo":
+                order_by = "created_at ASC"
+            else:  # lru
+                order_by = "COALESCE(last_hit_at, created_at) ASC"
+
+            cur = self._raw_db.execute(
+                f"""SELECT id FROM entries
+                   ORDER BY {order_by}
                    LIMIT ?""",
                 (entries_to_evict,),
             )
             evicted_ids = [row[0] for row in cur.fetchall()]
             if evicted_ids:
+                evicted_set = set(evicted_ids)
+                for eid in evicted_ids:
+                    e = self._entries.pop(eid, None)
+                    if e:
+                        self._exact_index.pop((e.namespace, e.query_hash, e.embedder), None)
+                for vindex in self._index.values():
+                    vindex.remove_ids(evicted_set)
+
                 chunk_size = 500
                 for i in range(0, len(evicted_ids), chunk_size):
                     chunk = evicted_ids[i : i + chunk_size]
                     placeholders = ",".join("?" for _ in chunk)
-                    self.db.execute(
+                    self._raw_db.execute(
                         f"DELETE FROM entries WHERE id IN ({placeholders})",
                         chunk,
                     )
-                self.db.commit()
-                # In-place index removal without clearing/reloading index
-                evicted_set = set(evicted_ids)
-                for vindex in self._index.values():
-                    vindex.remove_ids(evicted_set)
+                self._raw_db.commit()
+
+    _evict_lru_if_needed = _evict_if_needed
 
     # ------------------------------------------------------------------
     # Exact Match Lookup
@@ -477,26 +684,28 @@ class SQLiteStore:
         _validate_namespace(namespace)
         now = time.time()
         with self._lock:
+            index_key = f"{namespace}::{embedder}" if embedder else namespace
+            if index_key not in self._entries_loaded:
+                self._load(namespace, embedder)
+
+            eid = None
             if embedder:
-                cur = self.db.execute(
-                    """SELECT id, query, response, expires_at FROM entries
-                       WHERE namespace=? AND query_hash=? AND embedder=?
-                         AND (expires_at IS NULL OR expires_at > ?)
-                       ORDER BY id DESC LIMIT 1""",
-                    (namespace, query_hash, embedder, now),
-                )
+                eid = self._exact_index.get((namespace, query_hash, embedder))
             else:
-                cur = self.db.execute(
-                    """SELECT id, query, response, expires_at FROM entries
-                       WHERE namespace=? AND query_hash=?
-                         AND (expires_at IS NULL OR expires_at > ?)
-                       ORDER BY id DESC LIMIT 1""",
-                    (namespace, query_hash, now),
-                )
-            row = cur.fetchone()
-            if row is None:
+                eid = self._exact_index.get((namespace, query_hash, ""))
+                if eid is None:
+                    for (ns, qh, _), cand_id in self._exact_index.items():
+                        if ns == namespace and qh == query_hash:
+                            eid = cand_id
+                            break
+            if eid is None:
                 return None
-            return Entry(id=row[0], query=row[1], response=row[2], score=1.0)
+            entry = self._entries.get(eid)
+            if entry is None:
+                return None
+            if entry.expires_at is not None and entry.expires_at <= now:
+                return None
+            return Entry(id=entry.id, query=entry.query, response=entry.response, score=1.0)
 
     # ------------------------------------------------------------------
     # Index loading (internal)
@@ -507,31 +716,55 @@ class SQLiteStore:
         Caller must hold ``self._lock``.
         """
         index_key = f"{namespace}::{embedder}" if embedder else namespace
-        if index_key in self._index:
+        if index_key in self._index and index_key in self._entries_loaded:
             return self._index[index_key]
 
+        self._flush_unlocked()
         now = time.time()
+        sql_cols = (
+            "id, query, response, embedding, expires_at, created_at, hits, "
+            "last_hit_at, query_hash, embedder"
+        )
         if embedder:
-            rows = self.db.execute(
-                """SELECT id, embedding FROM entries
+            rows = self._raw_db.execute(
+                f"""SELECT {sql_cols}
+                   FROM entries
                    WHERE namespace=? AND embedder=?
                      AND (expires_at IS NULL OR expires_at > ?)""",
                 (namespace, embedder, now),
             ).fetchall()
         else:
-            rows = self.db.execute(
-                """SELECT id, embedding FROM entries
+            rows = self._raw_db.execute(
+                f"""SELECT {sql_cols}
+                   FROM entries
                    WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)""",
                 (namespace, now),
             ).fetchall()
 
         ids: list[int] = []
         vecs: list[np.ndarray] = []
-        for row_id, blob in rows:
+        for r in rows:
+            eid, q, resp, blob, exp, cr, hits, lha, qh, emb = r
             vec = _safe_load_blob(blob, self._embedding_dim)
             if vec is not None:
-                ids.append(row_id)
+                ids.append(eid)
                 vecs.append(vec)
+                entry = Entry(
+                    id=eid,
+                    query=q,
+                    response=resp,
+                    score=0.0,
+                    expires_at=exp,
+                    hits=hits,
+                    last_hit_at=lha,
+                    created_at=cr,
+                    namespace=namespace,
+                    embedder=emb,
+                    query_hash=qh or "",
+                )
+                self._entries[eid] = entry
+                if qh:
+                    self._exact_index[(namespace, qh, emb)] = eid
 
         if vecs:
             initial_mat = np.vstack(vecs)
@@ -540,8 +773,15 @@ class SQLiteStore:
             dim = self._embedding_dim or 0
             initial_mat = np.zeros((0, dim), dtype=np.float32)
 
-        vindex = VectorIndex(ids, initial_mat, dim)
+        vindex = VectorIndex(
+            ids,
+            initial_mat,
+            dim,
+            ann_threshold=self._ann_threshold,
+            ann_backend=self._ann_backend,
+        )
         self._index[index_key] = vindex
+        self._entries_loaded.add(index_key)
         return vindex
 
     # ------------------------------------------------------------------
@@ -557,13 +797,7 @@ class SQLiteStore:
         top_k: int = 5,
         min_similarity: float = -1.0,
     ) -> list[Entry]:
-        """Return up to ``top_k`` valid candidates sorted by cosine score descending.
-
-        Candidates below ``min_similarity`` are excluded before materializing
-        database rows. Expired or concurrently deleted entries trigger one index
-        rebuild, so a stale highest-scoring row cannot hide the next candidate.
-        The legacy :meth:`search` API remains available for older backends.
-        """
+        """Return up to ``top_k`` valid candidates sorted by cosine score descending."""
         _validate_namespace(namespace)
         if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
             raise ValueError("top_k must be a positive integer")
@@ -575,55 +809,32 @@ class SQLiteStore:
             raise ValueError("min_similarity must be in [-1.0, 1.0]")
 
         embedding = validate_embedding(embedding, self._embedding_dim)
-        index_key = f"{namespace}::{embedder}" if embedder else namespace
 
         with self._lock:
-            for attempt in range(2):
-                vindex = self._load(namespace, embedder)
-                ids, mat = vindex.ids, vindex.active_matrix()
-                if not ids:
-                    return []
+            vindex = self._load(namespace, embedder)
+            candidate_ids, scores = vindex.search(
+                embedding, top_k=top_k, min_similarity=float(min_similarity)
+            )
+            if not candidate_ids:
+                return []
 
-                scores = mat @ embedding
-                eligible = np.flatnonzero(scores >= float(min_similarity))
-                if eligible.size == 0:
-                    return []
-                order = eligible[np.argsort(scores[eligible])[::-1][:top_k]]
-                candidate_ids = [ids[int(i)] for i in order]
-                placeholders = ",".join("?" for _ in candidate_ids)
-                rows = self.db.execute(
-                    "SELECT id, query, response, expires_at FROM entries "
-                    f"WHERE id IN ({placeholders})",
-                    candidate_ids,
-                ).fetchall()
-                rows_by_id = {int(row[0]): row for row in rows}
-                now = time.time()
-                stale = any(
-                    eid not in rows_by_id
-                    or (rows_by_id[eid][3] is not None and rows_by_id[eid][3] <= now)
-                    for eid in candidate_ids
-                )
-                if stale:
-                    self._index.pop(index_key, None)
-                    if attempt == 0:
-                        continue
-
-                results: list[Entry] = []
-                for idx in order:
-                    row_id = ids[int(idx)]
-                    row = rows_by_id.get(row_id)
-                    if row is None or (row[3] is not None and row[3] <= now):
-                        continue
-                    results.append(
-                        Entry(
-                            id=int(row[0]),
-                            query=row[1],
-                            response=row[2],
-                            score=float(scores[int(idx)]),
-                        )
+            now = time.time()
+            results: list[Entry] = []
+            for eid, score in zip(candidate_ids, scores):
+                entry = self._entries.get(eid)
+                if entry is None:
+                    continue
+                if entry.expires_at is not None and entry.expires_at <= now:
+                    continue
+                results.append(
+                    Entry(
+                        id=entry.id,
+                        query=entry.query,
+                        response=entry.response,
+                        score=float(score),
                     )
-                return results
-        return []
+                )
+            return results
 
     def search(
         self,
@@ -638,12 +849,20 @@ class SQLiteStore:
         return candidates[0] if candidates else None
 
     def record_hit(self, entry_id: int) -> None:
+        now = time.time()
         with self._lock:
-            self.db.execute(
-                "UPDATE entries SET hits = hits + 1, last_hit_at = ? WHERE id=?",
-                (time.time(), entry_id),
-            )
-            self.db.commit()
+            entry = self._entries.get(entry_id)
+            if entry is not None:
+                entry.hits += 1
+                entry.last_hit_at = now
+            if self._batch_writes:
+                self._pending_hits[entry_id] = now
+            else:
+                self._raw_db.execute(
+                    "UPDATE entries SET hits = hits + 1, last_hit_at = ? WHERE id = ?",
+                    (now, entry_id),
+                )
+                self._raw_db.commit()
 
     # ------------------------------------------------------------------
     # Deletion / maintenance
@@ -655,46 +874,83 @@ class SQLiteStore:
         """
         _validate_namespace(namespace)
         with self._lock:
-            cur = self.db.execute(
+            self.flush()
+            cur = self._raw_db.execute(
                 "DELETE FROM entries WHERE namespace=? AND query=?",
                 (namespace, query),
             )
-            self.db.commit()
-            self._index = {
-                k: v
-                for k, v in self._index.items()
-                if not (k == namespace or k.startswith(f"{namespace}::"))
-            }
-            return cur.rowcount
+            self._raw_db.commit()
+            deleted = cur.rowcount
+            to_remove = [
+                eid
+                for eid, e in self._entries.items()
+                if e.namespace == namespace and e.query == query
+            ]
+            for eid in to_remove:
+                e = self._entries.pop(eid, None)
+                if e:
+                    self._exact_index.pop((e.namespace, e.query_hash, e.embedder), None)
+            rem_set = set(to_remove)
+            for k in list(self._index.keys()):
+                if k == namespace or k.startswith(f"{namespace}::"):
+                    self._index[k].remove_ids(rem_set)
+            return deleted
 
     def invalidate_expired(self) -> int:
         """Delete all expired entries across all namespaces.
         Returns the number of deleted rows.
         """
         with self._lock:
-            cur = self.db.execute(
+            self.flush()
+            now = time.time()
+            cur = self._raw_db.execute(
                 "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at <= ?",
-                (time.time(),),
+                (now,),
             )
-            self.db.commit()
-            self._index.clear()
-            return cur.rowcount
+            self._raw_db.commit()
+            deleted = cur.rowcount
+            to_remove = [
+                eid for eid, e in self._entries.items()
+                if e.expires_at is not None and e.expires_at <= now
+            ]
+            for eid in to_remove:
+                e = self._entries.pop(eid, None)
+                if e:
+                    self._exact_index.pop((e.namespace, e.query_hash, e.embedder), None)
+            rem_set = set(to_remove)
+            for vindex in self._index.values():
+                vindex.remove_ids(rem_set)
+            return deleted
 
     def clear(self, namespace: str | None = None) -> None:
         """Delete entries for *namespace* (or all namespaces if None)."""
         with self._lock:
+            self.flush()
             if namespace is not None:
                 _validate_namespace(namespace)
-                self.db.execute("DELETE FROM entries WHERE namespace=?", (namespace,))
+                self._raw_db.execute("DELETE FROM entries WHERE namespace=?", (namespace,))
+                to_remove = [eid for eid, e in self._entries.items() if e.namespace == namespace]
+                for eid in to_remove:
+                    e = self._entries.pop(eid, None)
+                    if e:
+                        self._exact_index.pop((e.namespace, e.query_hash, e.embedder), None)
                 self._index = {
                     k: v
                     for k, v in self._index.items()
                     if not (k == namespace or k.startswith(f"{namespace}::"))
                 }
+                self._entries_loaded = {
+                    k
+                    for k in self._entries_loaded
+                    if not (k == namespace or k.startswith(f"{namespace}::"))
+                }
             else:
-                self.db.execute("DELETE FROM entries")
+                self._raw_db.execute("DELETE FROM entries")
+                self._entries.clear()
+                self._exact_index.clear()
                 self._index.clear()
-            self.db.commit()
+                self._entries_loaded.clear()
+            self._raw_db.commit()
 
     # ------------------------------------------------------------------
     # Stats / diagnostics
@@ -703,54 +959,74 @@ class SQLiteStore:
     def size(self, namespace: str | None = None) -> int:
         """Return the number of (non-expired) entries."""
         now = time.time()
-        if namespace is not None:
-            _validate_namespace(namespace)
-            return self.db.execute(
-                """SELECT COUNT(*) FROM entries
-                   WHERE namespace=?
-                   AND (expires_at IS NULL OR expires_at > ?)""",
-                (namespace, now),
+        self.flush()
+        with self._lock:
+            if self._raw_db is None:
+                return 0
+            if namespace is not None:
+                _validate_namespace(namespace)
+                return self._raw_db.execute(
+                    """SELECT COUNT(*) FROM entries
+                       WHERE namespace=?
+                       AND (expires_at IS NULL OR expires_at > ?)""",
+                    (namespace, now),
+                ).fetchone()[0]
+            return self._raw_db.execute(
+                "SELECT COUNT(*) FROM entries WHERE expires_at IS NULL OR expires_at > ?",
+                (now,),
             ).fetchone()[0]
-        return self.db.execute(
-            "SELECT COUNT(*) FROM entries WHERE expires_at IS NULL OR expires_at > ?",
-            (now,),
-        ).fetchone()[0]
 
     def namespace_stats(self, namespace: str) -> dict:
         """Return hit/miss statistics and entry count for a namespace."""
         _validate_namespace(namespace)
         now = time.time()
-        row = self.db.execute(
-            """SELECT COUNT(*), SUM(hits), MAX(last_hit_at)
-               FROM entries
-               WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)""",
-            (namespace, now),
-        ).fetchone()
-        return {
-            "namespace": namespace,
-            "entries": row[0] or 0,
-            "total_hits": row[1] or 0,
-            "last_hit_at": row[2],
-        }
+        self.flush()
+        with self._lock:
+            if self._raw_db is None:
+                return {
+                    "namespace": namespace,
+                    "entries": 0,
+                    "total_hits": 0,
+                    "last_hit_at": None,
+                }
+            row = self._raw_db.execute(
+                """SELECT COUNT(*), SUM(hits), MAX(last_hit_at)
+                   FROM entries
+                   WHERE namespace=? AND (expires_at IS NULL OR expires_at > ?)""",
+                (namespace, now),
+            ).fetchone()
+            return {
+                "namespace": namespace,
+                "entries": row[0] or 0,
+                "total_hits": row[1] or 0,
+                "last_hit_at": row[2],
+            }
 
     def close(self) -> None:
         """Close the database connection (safe to call more than once)."""
         self._close_db()
 
     def _close_db(self) -> None:
-        # Shared by close() and __del__.  __del__ must not call the public, overridable
-        # close(): a patched or subclassed close() can run while the object is being
-        # garbage-collected, which crashed the interpreter in tests.
+        stop_ev = getattr(self, "_stop_event", None)
+        if stop_ev is not None:
+            stop_ev.set()
+        writer = getattr(self, "_writer_thread", None)
+        if writer is not None and writer.is_alive():
+            writer.join(timeout=0.2)
+
         lock = getattr(self, "_lock", None)
-        if lock is None:
-            db = getattr(self, "db", None)
-            if db is not None:
-                db.close()
-            return
-        with lock:
-            db = getattr(self, "db", None)
-            if db is not None:
-                db.close()
+        if lock is not None:
+            with lock:
+                self._flush_unlocked()
+                raw_db = getattr(self, "_raw_db", None)
+                if raw_db is not None:
+                    raw_db.close()
+                    self._raw_db = None
+        else:
+            raw_db = getattr(self, "_raw_db", None)
+            if raw_db is not None:
+                raw_db.close()
+                self._raw_db = None
 
     def __enter__(self) -> SQLiteStore:
         return self
