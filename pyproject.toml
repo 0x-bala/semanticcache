@@ -23,6 +23,7 @@ openai = ["openai>=1.0.0"]
 cohere = ["cohere>=5.0.0"]
 langchain = ["langchain-core>=0.1.0"]
 llama-index = ["llama-index-core>=0.10.0"]
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
 all = [
     "faiss-cpu>=1.7.0",
     "openai>=1.0.0",
