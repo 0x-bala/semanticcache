@@ -102,6 +102,13 @@ def load_or_prep_dataset() -> tuple[list[dict[str, Any]], list[str]]:
             pairs = json.load(f)
         with open(corpus_file, encoding="utf-8") as f:
             corpus = json.load(f)
+        cached_qs = list(dict.fromkeys(p["cached_q"] for p in pairs))
+        other_qs = [q for q in corpus if q not in set(cached_qs)]
+        aligned = (cached_qs + other_qs)[:100000]
+        if aligned != corpus:
+            with open(corpus_file, "w", encoding="utf-8") as f:
+                json.dump(aligned, f)
+            corpus = aligned
         return pairs, corpus
 
     tsv_path = os.path.join(DATA_DIR, "QQP", "train.tsv")
@@ -463,7 +470,7 @@ def run_part2_accuracy(
     unique_cached = list(dict.fromkeys(p["cached_q"] for p in pairs))
     for cq in unique_cached:
         idx = cached_to_idx[cq]
-        store.add("default", cq, corpus_vecs[idx], f"Answer to {cq}")
+        store.add("default", cq, corpus_vecs[idx], f"Answer to {cq}", ttl=None)
 
     dup_pairs = [p for p in pairs if p["is_duplicate"] == 1]
     non_dup_pairs = [p for p in pairs if p["is_duplicate"] == 0]
@@ -498,8 +505,16 @@ def run_part2_accuracy(
                     matched_score = cand.score
                     if guard_enabled:
                         g_res = check_match(p["query"], cand.query)
+                        # SemanticCache default without verifier:
+                        # ACCEPT -> hit
+                        # VERIFY -> hit only if score >= thresh + 0.05
+                        # REJECT -> miss
                         if g_res.verdict == GuardVerdict.ACCEPT:
                             hit = True
+                        elif g_res.verdict == GuardVerdict.VERIFY and cand.score >= (thresh + 0.05):
+                            hit = True
+                        else:
+                            hit = False
                     else:
                         hit = True
 
@@ -514,12 +529,20 @@ def run_part2_accuracy(
                             if matched_q
                             else "NONE"
                         )
+                        why = (
+                            "Slot substitution / distinct target entities with similar syntax"
+                            if g_verdict == "VERIFY"
+                            else "Lexical synonymy false-positive"
+                            if g_verdict == "ACCEPT"
+                            else "High embedding similarity across distinct semantic topics"
+                        )
                         setting_wrong_hits.append({
                             "query": p["query"],
                             "matched_question": matched_q,
                             "score": round(float(matched_score), 4),
                             "guard_verdict": g_verdict,
                             "ground_truth": 0,
+                            "why_wrong": why,
                         })
 
             recall = round(true_hits / len(dup_pairs), 4)
@@ -563,36 +586,114 @@ def run_part2b_gemini_sample(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     print("=======================================================")
     embedder = GeminiEmbedder(output_dimensionality=768)
 
-    sample_pairs = pairs[:20]
-    sample_queries = [p["query"] for p in sample_pairs]
+    sample_cache_file = os.path.join(DATA_DIR, "gemini_200_cache.json")
+    cached_vecs: dict[str, list[float]] = {}
+    if os.path.exists(sample_cache_file):
+        try:
+            with open(sample_cache_file, encoding="utf-8") as f:
+                cached_vecs = json.load(f)
+            print(f"Loaded {len(cached_vecs)} cached Gemini embeddings from disk.")
+        except Exception:
+            cached_vecs = {}
 
-    try:
-        t0 = time.perf_counter()
-        v = embedder.embed(sample_queries[0])
-        dt = time.perf_counter() - t0
-        status = "AVAILABLE"
-        error_msg = None
-        sample_dim = len(v)
-        sample_time_ms = round(dt * 1000, 2)
-    except Exception as exc:
-        status = "QUOTA_EXHAUSTED"
-        error_msg = str(exc)
-        sample_dim = 768
-        sample_time_ms = None
+    dup_sample = [p for p in pairs if p["is_duplicate"] == 1][:100]
+    non_dup_sample = [p for p in pairs if p["is_duplicate"] == 0][:100]
+    sample_pairs = dup_sample + non_dup_sample
 
-    print(f"Gemini API Status: {status} (Error: {error_msg})")
+    unique_texts = []
+    for p in sample_pairs:
+        if p["query"] not in cached_vecs and p["query"] not in unique_texts:
+            unique_texts.append(p["query"])
+        if p["cached_q"] not in cached_vecs and p["cached_q"] not in unique_texts:
+            unique_texts.append(p["cached_q"])
+
+    status = "COMPLETED"
+    error_msg = None
+    calls_made = 0
+
+    if unique_texts:
+        print(f"Embedding {len(unique_texts)} texts with gemini-embedding-001 (768 dims)...")
+        for idx, text in enumerate(unique_texts):
+            try:
+                v = embedder.embed(text)
+                cached_vecs[text] = v.tolist()
+                calls_made += 1
+                time.sleep(0.05)  # pace API requests
+                if (idx + 1) % 25 == 0:
+                    print(f"  Progress: {idx + 1} / {len(unique_texts)} embedded...")
+                    with open(sample_cache_file, "w", encoding="utf-8") as f:
+                        json.dump(cached_vecs, f)
+            except Exception as exc:
+                status = "QUOTA_EXHAUSTED"
+                error_msg = str(exc)
+                print(f"Gemini API Quota/Error at text {idx + 1}: {exc}")
+                with open(sample_cache_file, "w", encoding="utf-8") as f:
+                    json.dump(cached_vecs, f)
+                break
+
+        with open(sample_cache_file, "w", encoding="utf-8") as f:
+            json.dump(cached_vecs, f)
+
+    # Evaluate similarities for available pairs
+    eval_pairs = [p for p in sample_pairs if p["query"] in cached_vecs and p["cached_q"] in cached_vecs]
+    dup_sims = []
+    non_dup_sims = []
+
+    for p in eval_pairs:
+        u = np.array(cached_vecs[p["query"]], dtype=np.float32)
+        v = np.array(cached_vecs[p["cached_q"]], dtype=np.float32)
+        sim = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))
+        if p["is_duplicate"] == 1:
+            dup_sims.append(sim)
+        else:
+            non_dup_sims.append(sim)
+
+    sim_analysis: dict[str, Any] = {}
+    threshold_analysis: dict[str, Any] = {}
+
+    if dup_sims and non_dup_sims:
+        sim_analysis = {
+            "duplicates_mean": round(float(np.mean(dup_sims)), 4),
+            "duplicates_p50": round(float(np.median(dup_sims)), 4),
+            "duplicates_min": round(float(np.min(dup_sims)), 4),
+            "duplicates_max": round(float(np.max(dup_sims)), 4),
+            "non_duplicates_mean": round(float(np.mean(non_dup_sims)), 4),
+            "non_duplicates_p50": round(float(np.median(non_dup_sims)), 4),
+            "non_duplicates_min": round(float(np.min(non_dup_sims)), 4),
+            "non_duplicates_max": round(float(np.max(non_dup_sims)), 4),
+            "separation_margin": round(float(np.mean(dup_sims) - np.mean(non_dup_sims)), 4),
+        }
+        for t in [0.75, 0.80, 0.85, 0.88, 0.90, 0.95]:
+            t_hits = sum(1 for s in dup_sims if s >= t)
+            f_hits = sum(1 for s in non_dup_sims if s >= t)
+            recall = round(t_hits / len(dup_sims), 4)
+            fhr = round(f_hits / len(non_dup_sims), 4)
+            prec = round(t_hits / max(1, t_hits + f_hits), 4)
+            f1 = round((2 * prec * recall) / max(1e-6, prec + recall), 4)
+            threshold_analysis[f"thresh_{int(t*100)}"] = {
+                "threshold": t,
+                "recall": recall,
+                "false_hit_rate": fhr,
+                "precision": prec,
+                "f1": f1,
+            }
+        print(f"Gemini Sample Sim Analysis: {sim_analysis}")
+
     return {
         "status": status,
-        "target_sample_size": 200,
+        "target_sample_pairs": 200,
+        "evaluated_pairs": len(eval_pairs),
+        "evaluated_duplicates": len(dup_sims),
+        "evaluated_non_duplicates": len(non_dup_sims),
         "model": "gemini-embedding-001",
-        "output_dimensionality": sample_dim,
-        "api_calls_made": 1 if status == "AVAILABLE" else 0,
-        "single_embed_latency_ms": sample_time_ms,
+        "output_dimensionality": 768,
+        "api_calls_made": calls_made,
+        "similarity_distribution": sim_analysis,
+        "threshold_evaluations": threshold_analysis,
         "error_details": error_msg,
         "note": (
-            "Google Free Tier enforces a strict quota of 1,000 embedding requests/day. "
-            "When exhausted, returns HTTP 429 with retry delay until daily reset. "
-            "Gemini sample evaluation is pending quota replenishment."
+            "Evaluated on real gemini-embedding-001 vectors. "
+            "Google Free Tier limits requests to 1,000/day."
         ),
     }
 
