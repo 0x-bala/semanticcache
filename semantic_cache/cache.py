@@ -614,8 +614,10 @@ class SemanticCache:
                     self.stats.guard_rejects += 1
                     continue
                 if guard_result.verdict == GuardVerdict.VERIFY:
-                    should_verify = eff_verify_always or (
-                        entry.score < eff_threshold + self.guard_buffer
+                    should_verify = (
+                        eff_verify_always
+                        or guard_result.must_verify
+                        or entry.score < eff_threshold + self.guard_buffer
                     )
                     if should_verify:
                         if self.verifier is None:

@@ -163,7 +163,13 @@ class VectorIndex:
         "ann_threshold",
         "ann_backend",
         "ann_index",
+        "ann_ids",
+        "ann_removed",
     )
+
+    # Rebuild the ANN graph only once this fraction of its entries was evicted.
+    # Until then evicted ids are filtered out of the results (HNSW cannot delete).
+    ANN_REBUILD_FRACTION = 0.25
 
     def __init__(
         self,
@@ -179,16 +185,24 @@ class VectorIndex:
         self.ann_threshold = ann_threshold
         self.ann_backend = ann_backend
         self.ann_index: Any = None
+        self.ann_ids: list[int] = []
+        self.ann_removed: set[int] = set()
         capacity = max(16, self.count)
         if matrix.shape[0] < capacity:
             self.matrix = np.zeros((capacity, dim), dtype=np.float32)
             if self.count > 0:
                 self.matrix[: self.count] = matrix[: self.count]
         else:
-            self.matrix = np.ascontiguousarray(matrix, dtype=np.float32)
+            # Copy: eviction compacts rows in place and must not touch the caller's array.
+            self.matrix = np.array(matrix, dtype=np.float32, order="C")
 
         if self.count >= self.ann_threshold:
-            self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
+            self._rebuild_ann()
+
+    def _rebuild_ann(self) -> None:
+        self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
+        self.ann_ids = list(self.ids) if self.ann_index is not None else []
+        self.ann_removed = set()
 
     def __iter__(self) -> Iterator[Any]:
         """Allows unpacking as `ids, mat = index` for backward compatibility."""
@@ -222,20 +236,24 @@ class VectorIndex:
 
         if self.count >= self.ann_threshold:
             if self.ann_index is None:
-                self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
+                self._rebuild_ann()
             else:
                 try:
                     vec32 = flat_vec.reshape(1, -1).astype(np.float32)
                     if hasattr(self.ann_index, "add_items"):  # hnswlib
                         if self.count > self.ann_index.get_max_elements():
                             self.ann_index.resize_index(self.count * 2)
-                        self.ann_index.add_items(vec32, np.array([self.count - 1]))
+                        self.ann_index.add_items(vec32, np.array([len(self.ann_ids)]))
                     elif hasattr(self.ann_index, "add"):  # faiss
                         self.ann_index.add(vec32)
                     else:
                         self.ann_index = None
+                    if self.ann_index is not None:
+                        self.ann_ids.append(entry_id)
                 except Exception:
                     self.ann_index = None
+                    self.ann_ids = []
+                    self.ann_removed = set()
 
     def active_matrix(self) -> np.ndarray:
         return self.matrix[: self.count]
@@ -251,16 +269,22 @@ class VectorIndex:
             self.ids.clear()
             self.count = 0
             self.ann_index = None
+            self.ann_ids = []
+            self.ann_removed = set()
             return
         # Compact matrix rows in-place
         self.matrix[: len(keep_indices)] = self.matrix[keep_indices]
         self.ids = [self.ids[i] for i in keep_indices]
         self.count = len(self.ids)
         if self.ann_index is not None:
-            if self.count >= self.ann_threshold:
-                self.ann_index = _build_ann_index(self.dim, self.active_matrix(), self.ann_backend)
-            else:
+            if self.count < self.ann_threshold:
                 self.ann_index = None
+                self.ann_ids = []
+                self.ann_removed = set()
+            else:
+                self.ann_removed |= ids_to_remove
+                if len(self.ann_removed) > self.ANN_REBUILD_FRACTION * max(1, len(self.ann_ids)):
+                    self._rebuild_ann()
 
     def search(
         self,
@@ -275,19 +299,27 @@ class VectorIndex:
         if self.ann_index is not None and self.count >= self.ann_threshold:
             try:
                 q = query_vec.reshape(1, -1).astype(np.float32)
+                # Over-fetch so evicted (still graph-resident) ids can be skipped.
+                k = min(len(self.ann_ids), top_k + 32)
                 if hasattr(self.ann_index, "knn_query"):  # hnswlib (cosine distance)
-                    labels, dists = self.ann_index.knn_query(q, k=min(top_k, self.count))
+                    labels, dists = self.ann_index.knn_query(q, k=k)
                     indices, scores = labels, 1.0 - dists
                 else:  # faiss (inner product)
-                    scores, indices = self.ann_index.search(q, top_k)
+                    scores, indices = self.ann_index.search(q, k)
                 res_ids: list[int] = []
                 res_scores: list[float] = []
                 for idx, score in zip(indices[0], scores[0]):
-                    if 0 <= idx < len(self.ids):
-                        s = float(score)
-                        if s >= min_similarity:
-                            res_ids.append(self.ids[int(idx)])
-                            res_scores.append(s)
+                    if not 0 <= idx < len(self.ann_ids):
+                        continue
+                    entry_id = self.ann_ids[int(idx)]
+                    if entry_id in self.ann_removed:
+                        continue
+                    s = float(score)
+                    if s >= min_similarity:
+                        res_ids.append(entry_id)
+                        res_scores.append(s)
+                        if len(res_ids) >= top_k:
+                            break
                 return res_ids, res_scores
             except Exception as exc:
                 logger.debug("ANN search failed, falling back to brute force: %s", exc)

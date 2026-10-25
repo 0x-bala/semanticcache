@@ -36,7 +36,6 @@ import torch  # noqa: E402
 from transformers import AutoModel, AutoTokenizer  # noqa: E402
 
 from semantic_cache.gemini import GeminiEmbedder  # noqa: E402
-from semantic_cache.guard import GuardVerdict, check_match  # noqa: E402
 from semantic_cache.store import SQLiteStore  # noqa: E402
 from semantic_cache.verifier import GeminiVerifier  # noqa: E402
 
@@ -455,128 +454,23 @@ def run_part2_accuracy(
     query_vecs: np.ndarray,
     corpus_questions: list[str],
     corpus_vecs: np.ndarray,
+    verifier: Any = None,
 ) -> dict[str, Any]:
-    """Run Part 2: Offline accuracy, hit rate, and false-hit rate on 2,000 real QQP pairs."""
+    """Run Part 2 through the real SemanticCache.get() (see benchmarks/accuracy_eval.py)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from accuracy_eval import evaluate_pairs  # noqa: PLC0415
+
     print("\n=======================================================")
-    print("PART 2: ACCURACY ON REAL PAIRS (Offline Decision)")
+    print("PART 2: ACCURACY ON REAL PAIRS (real SemanticCache.get decisions)")
     print("=======================================================")
-    dim = corpus_vecs.shape[1]
-    thresholds = [0.80, 0.85, 0.90, 0.95]
-    settings_results = {}
-    all_worst_wrong_hits = []
-
-    cached_to_idx = {q: idx for idx, q in enumerate(corpus_questions[: len(corpus_vecs)])}
-    store = SQLiteStore(path=":memory:", embedding_dim=dim)
-    unique_cached = list(dict.fromkeys(p["cached_q"] for p in pairs))
-    for cq in unique_cached:
-        idx = cached_to_idx[cq]
-        store.add("default", cq, corpus_vecs[idx], f"Answer to {cq}", ttl=None)
-
-    dup_pairs = [p for p in pairs if p["is_duplicate"] == 1]
-    non_dup_pairs = [p for p in pairs if p["is_duplicate"] == 0]
-
-    guard_dup_counts = {"ACCEPT": 0, "VERIFY": 0, "REJECT": 0}
-    for p in dup_pairs:
-        gv = check_match(p["query"], p["cached_q"]).verdict
-        guard_dup_counts[gv.value] += 1
-
-    print(f"Guard counts on 1,000 Duplicate Pairs: {guard_dup_counts}")
-
-    for guard_enabled in [False, True]:
-        for thresh in thresholds:
-            key = f"guard_{'on' if guard_enabled else 'off'}_thresh_{int(thresh*100)}"
-            true_hits = 0
-            wrong_hits = 0
-            setting_wrong_hits = []
-
-            for i, p in enumerate(pairs):
-                qv = query_vecs[i]
-                cands = store.search_candidates(
-                    "default", qv, top_k=1, min_similarity=thresh
-                )
-
-                hit = False
-                matched_q = None
-                matched_score = 0.0
-
-                if cands:
-                    cand = cands[0]
-                    matched_q = cand.query
-                    matched_score = cand.score
-                    if guard_enabled:
-                        g_res = check_match(p["query"], cand.query)
-                        # SemanticCache default without verifier:
-                        # ACCEPT -> hit
-                        # VERIFY -> hit only if score >= thresh + 0.05
-                        # REJECT -> miss
-                        if g_res.verdict == GuardVerdict.ACCEPT:
-                            hit = True
-                        elif g_res.verdict == GuardVerdict.VERIFY and cand.score >= (thresh + 0.05):
-                            hit = True
-                        else:
-                            hit = False
-                    else:
-                        hit = True
-
-                if p["is_duplicate"] == 1:
-                    if hit:
-                        true_hits += 1
-                else:
-                    if hit:
-                        wrong_hits += 1
-                        g_verdict = (
-                            check_match(p["query"], matched_q).verdict.value
-                            if matched_q
-                            else "NONE"
-                        )
-                        why = (
-                            "Slot substitution / distinct target entities with similar syntax"
-                            if g_verdict == "VERIFY"
-                            else "Lexical synonymy false-positive"
-                            if g_verdict == "ACCEPT"
-                            else "High embedding similarity across distinct semantic topics"
-                        )
-                        setting_wrong_hits.append({
-                            "query": p["query"],
-                            "matched_question": matched_q,
-                            "score": round(float(matched_score), 4),
-                            "guard_verdict": g_verdict,
-                            "ground_truth": 0,
-                            "why_wrong": why,
-                        })
-
-            recall = round(true_hits / len(dup_pairs), 4)
-            false_hit_rate = round(wrong_hits / len(non_dup_pairs), 4)
-            precision = round(true_hits / max(1, true_hits + wrong_hits), 4)
-            f1 = round((2 * precision * recall) / max(1e-6, precision + recall), 4)
-
-            settings_results[key] = {
-                "guard_enabled": guard_enabled,
-                "threshold": thresh,
-                "true_duplicates_total": len(dup_pairs),
-                "true_hits": true_hits,
-                "recall": recall,
-                "non_duplicates_total": len(non_dup_pairs),
-                "wrong_hits": wrong_hits,
-                "false_hit_rate": false_hit_rate,
-                "precision": precision,
-                "f1": f1,
-            }
-            print(
-                f"[{key}] Recall={recall:.4f} | False-Hit Rate={false_hit_rate:.4f} | "
-                f"Precision={precision:.4f} | F1={f1:.4f}"
-            )
-
-            if guard_enabled and thresh == 0.85:
-                setting_wrong_hits.sort(key=lambda x: x["score"], reverse=True)
-                all_worst_wrong_hits = setting_wrong_hits[:20]
-
-    store.close()
-    return {
-        "guard_duplicate_verdict_counts": guard_dup_counts,
-        "settings": settings_results,
-        "worst_20_wrong_hits_at_guard_on_85": all_worst_wrong_hits,
-    }
+    result = evaluate_pairs(pairs, query_vecs, corpus_questions, corpus_vecs, verifier=verifier)
+    print(f"Guard verdicts on true duplicates: {result['guard_duplicate_verdict_counts']}")
+    for key, row in result["settings"].items():
+        print(
+            f"[{key}] Recall={row['recall']:.4f} | False-Hit Rate={row['false_hit_rate']:.4f} | "
+            f"Precision={row['precision']:.4f} | F1={row['f1']:.4f}"
+        )
+    return result
 
 
 def run_part2b_gemini_sample(pairs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -775,6 +669,11 @@ def main():
     parser.add_argument(
         "--part", type=int, choices=[1, 2, 3, 12, 123, 1234], default=123, help="Part to run"
     )
+    parser.add_argument(
+        "--cross-encoder",
+        action="store_true",
+        help="Also run Part 2 with the local CrossEncoderVerifier (needs sentence-transformers).",
+    )
     args = parser.parse_args()
 
     embedder = LocalMiniLMEmbedder()
@@ -801,7 +700,14 @@ def main():
         print(f"\nPart 1 complete. Saved to {RESULTS_PATH}")
 
     if args.part in (2, 12, 123, 1234):
-        part2 = run_part2_accuracy(pairs, query_vecs, corpus_questions, corpus_100k)
+        verifier = None
+        if args.cross_encoder:
+            from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+            verifier = CrossEncoderVerifier()
+        part2 = run_part2_accuracy(
+            pairs, query_vecs, corpus_questions, corpus_100k, verifier=verifier
+        )
         results["part2_accuracy_real_pairs"] = part2
         part2b = run_part2b_gemini_sample(pairs)
         results["part2b_gemini_sample"] = part2b

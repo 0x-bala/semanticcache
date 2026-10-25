@@ -26,6 +26,10 @@ class GuardResult:
     """Outcome of guard evaluation."""
     verdict: GuardVerdict
     reason: str
+    # True for matches that look identical to an embedder but are dangerous:
+    # swapped roles, or a different entity in the same slot. The cache always
+    # verifies these, whatever the similarity score or ``verify_always`` setting.
+    must_verify: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +688,7 @@ def check_match(
         return GuardResult(
             GuardVerdict.VERIFY,
             f"Different slot values on both sides: {unmatched_new} vs {unmatched_cached}",
+            must_verify=True,
         )
 
     # Rule (d'): one-sided extra content words that are NOT all safe → VERIFY
@@ -697,7 +702,9 @@ def check_match(
     ordered_new = [t for t in canonical_new if t not in stopwords and t not in safe_words]
     ordered_cached = [t for t in canonical_cached if t not in stopwords and t not in safe_words]
     if ordered_new != ordered_cached:
-        return GuardResult(GuardVerdict.VERIFY, "Content words appear in different order")
+        return GuardResult(
+            GuardVerdict.VERIFY, "Content words appear in different order", must_verify=True
+        )
 
     # Rule (e): ACCEPT if only safe-word changes remain.
     return GuardResult(
