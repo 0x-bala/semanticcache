@@ -1,398 +1,379 @@
-# Semantic Cache 🧠⚡
+# semantic-cache
 
-> High-performance semantic caching layer for LLM calls — match prompts by meaning rather than exact text, eliminate redundant API calls, and cut latency from seconds to under a millisecond with robust guard protection.
+[![CI](https://github.com/0x-bala/semanticcache/actions/workflows/ci.yml/badge.svg)](https://github.com/0x-bala/semanticcache/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)
 
-A lightweight, plug-and-play **semantic caching layer** for LLM calls. Instead of matching prompts byte-for-byte, it matches by *meaning* — so near-duplicates and paraphrases return cached answers instantly.
+A semantic cache for LLM applications. It returns a stored answer when a new prompt
+means the same thing as an earlier one, and calls the model only when it does not.
+A rule-based guard and an optional verifier reduce the chance of returning a wrong answer
+for prompts that look alike but are not equivalent.
 
-```
-"What is the capital of France?"   →  MISS  → calls LLM → cached
-"what's the capital of france"     →  HIT   → returned in < 1 ms
-"Capital city of France?"          →  HIT   → returned in < 1 ms  ✨
-```
+- Runs in-process with SQLite and NumPy. No server or vector database is required.
+- Works with any embedding model: local, hosted, or the built-in offline hashing embedder.
+- Sync and async APIs, streaming support, and adapters for OpenAI, LangChain and LlamaIndex.
+- Optional FAISS index for large caches.
 
----
+Contents: [Installation](#installation) | [Quick start](#quick-start) | [Usage](#usage) |
+[Architecture](#architecture) | [Performance and accuracy](#performance-and-accuracy) |
+[Limitations](#limitations) | [Development](#development) | [Contributing](#contributing) |
+[Security](#security) | [License](#license)
 
-## Features
+## Why a guard is needed
 
-| Feature | Details |
-|---------|---------|
-| 🔌 Plug-and-play | Drop-in decorator for any `fn(prompt) -> str` |
-| 🧠 Semantic matching | Cosine similarity on embeddings |
-| 💾 SQLite backend | Persistent, zero-server storage (`SQLiteStore()` with no path is in-memory) |
-| ⏰ TTL support | Auto-expire stale entries |
-| 🗂️ Namespaces | Isolate caches per model / system prompt / user |
-| 📊 Stats | Hit-rate, misses, seconds saved |
-| 🔧 Swappable embedders | `HashingEmbedder` (offline) or `SentenceTransformerEmbedder` |
-| ⚡ Async API | Native `aget`, `aset`, `aask`, and async streaming caching |
-| 🌊 Streaming support | Cache generator and async iterator chunk streams |
-| 🏷️ `@cached` decorator | Sync & async function decorator with bypass support |
-| 🤝 Adapters | Drop-in integrations for OpenAI, LangChain, and LlamaIndex |
-| 🤖 Provider Embedders | OpenAI, Cohere, Ollama, Gemini, SentenceTransformers, Hashing |
-| 🧹 Eviction Policies | LRU, LFU (least frequently used), FIFO (first-in first-out) |
-| 🚀 In-memory + ANN | Microsecond in-memory index with optional FAISS/HNSW backend |
-| 🔐 Context isolation | Opaque namespaces from response-affecting context |
+Embedding similarity alone is not a safe test for "same question". These pairs score
+above typical thresholds but need different answers:
 
----
+| Prompt A | Prompt B |
+|---|---|
+| Convert 10 km to miles | Convert 10 miles to km |
+| What is C++? | What is C#? |
+| Is x > 5? | Is x < 5? |
+| Who is the CEO of Tesla? | Who is the CEO of Apple? |
 
-## Installation & Extras
+`semantic-cache` checks each candidate match against explicit rules (numbers, units,
+negation, symbols, entities, question type) before returning it. Matches the rules
+cannot settle are treated as misses unless a verifier approves them.
+
+## Installation
+
+Requires Python 3.10 or newer. Install from source:
 
 ```bash
-# Core package (zero heavy dependencies)
-pip install semantic-cache
-
-# Optional extras:
-pip install "semantic-cache[ann]"          # FAISS / HNSW acceleration
-pip install "semantic-cache[openai]"       # OpenAI SDK & embedder
-pip install "semantic-cache[cohere]"       # Cohere embedder
-pip install "semantic-cache[langchain]"    # LangChain cache adapter
-pip install "semantic-cache[llama-index]"  # LlamaIndex KVStore adapter
-pip install "semantic-cache[all]"          # All optional dependencies
+git clone https://github.com/0x-bala/semanticcache.git
+cd semanticcache
+pip install -e .
 ```
 
----
+The core package depends only on NumPy. Optional extras:
 
-## Quick Start
+| Extra | Installs | Use |
+|---|---|---|
+| `ann` | faiss-cpu | Approximate search for large caches |
+| `openai` | openai | OpenAI client wrapper and embedder |
+| `cohere` | cohere | Cohere embedder |
+| `langchain` | langchain-core | LangChain cache adapter |
+| `llama-index` | llama-index-core | LlamaIndex adapter |
+| `transformers` | sentence-transformers | Local embeddings and cross-encoder verifier |
+| `dev` | pytest, ruff, build, anyio | Development |
+| `all` | all of the above except `dev` | |
+
+```bash
+pip install -e ".[ann,transformers]"
+```
+
+## Quick start
 
 ```python
 from semantic_cache import SemanticCache
 
 cache = SemanticCache(threshold=0.85, ttl=3600)
 
-def mock_llm(prompt: str) -> str:
-    return f"Response to: {prompt}"
+@cache.cached(namespace="my-app")
+def ask(prompt: str) -> str:
+    return call_your_llm(prompt)      # replace with a real call
 
-@cache.cached(namespace="gpt4:v1")
-def ask_llm(prompt: str) -> str:
-    return mock_llm(prompt)
-
-print(ask_llm("What is the capital of France?"))   # MISS → calls LLM
-print(ask_llm("what's the capital of france"))      # HIT  → instant (< 1 ms)
+ask("What is the capital of France?")   # miss: calls the function, stores the answer
+ask("what's the capital of france")     # hit: answered from the cache
 ```
 
----
+The default embedder is an offline character n-gram hasher. It needs no model download
+and works for repeated or lightly reworded prompts. For real paraphrase matching, use a
+model-based embedder (see [Embedders](#embedders)).
 
-## Integrations & Advanced Features
-
-### 1. Async API (`aget`, `aset`, `aask`)
-
-Native `async` / `await` support without blocking event loops:
+Without the decorator:
 
 ```python
-import asyncio
-from semantic_cache import SemanticCache
-
-cache = SemanticCache(threshold=0.88)
-
-async def main():
-    # Direct async set and get
-    await cache.aset("What is async Python?", "Async Python uses coroutines.")
-    res = await cache.aget("what is async python")
-    if res and res.hit:
-        print("Async hit:", res.response)
-
-    # aask: get-or-compute with sync or async LLM call
-    async def call_llm(prompt: str) -> str:
-        await asyncio.sleep(0.1)
-        return f"LLM answer to {prompt}"
-
-    answer = await cache.aask("Explain event loops", call_llm)
-    print(answer)
-
-asyncio.run(main())
+result = cache.get("What is the capital of France?")
+if result is not None:
+    print(result.response, result.score)
+else:
+    answer = call_your_llm("What is the capital of France?")
+    cache.set("What is the capital of France?", answer)
 ```
 
-### 2. Streaming Response Caching
+## Usage
 
-Cache chunked streaming responses from generators and async generators:
-
-```python
-# Sync streaming
-def stream_llm(prompt: str):
-    for token in ["Hello ", "world ", "from ", "stream!"]:
-        yield token
-
-# First call streams from LLM; subsequent calls replay cached stream instantly
-for chunk in cache.get_or_compute_stream("Say hello", stream_llm):
-    print(chunk, end="", flush=True)
-
-# Async streaming
-async def async_stream_llm(prompt: str):
-    for token in ["Async ", "token ", "stream"]:
-        yield token
-
-async for chunk in cache.async_get_or_compute_stream("Say hello async", async_stream_llm):
-    print(chunk, end="", flush=True)
-```
-
-### 3. Standalone `@cached` Decorator
-
-Use the `@cached` decorator on sync and async functions, with support for custom key functions and bypass flags:
+### Configuration
 
 ```python
-from semantic_cache import cached
-
-@cached(threshold=0.90, ttl=3600)
-def generate_summary(text: str) -> str:
-    return f"Summary of {text}"
-
-# Normal call (hits cache on duplicate/paraphrase)
-summary = generate_summary("Analyze quarterly performance")
-
-# Bypass cache when a fresh response is strictly required
-fresh = generate_summary("Analyze quarterly performance", bypass=True)
-```
-
-### 4. OpenAI Client Wrapper
-
-Wrap standard sync or async `OpenAI` clients to transparently cache completions and streaming responses:
-
-```python
-from openai import OpenAI
-from semantic_cache import SemanticCache
-from semantic_cache.adapters.openai import wrap_openai
-
-client = wrap_openai(OpenAI(), cache=SemanticCache(threshold=0.92))
-
-# Non-streaming call: cached on semantic match
-response = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "What is Python?"}],
+SemanticCache(
+    embedder=None,        # object with embed(text) and embed_batch(texts); default HashingEmbedder
+    store=None,           # default SQLiteStore() in memory
+    threshold=0.85,       # minimum cosine similarity for a candidate
+    ttl=None,             # seconds before entries expire; None means never
+    namespace="default",  # separate caches per model, prompt version or tenant
+    guard=True,           # apply the hit guard
+    verifier=None,        # callable(new_query, cached_query) -> bool for ambiguous matches
+    verify_always=True,   # True: every ambiguous match needs the verifier
+    shadow_rate=0.0,      # fraction of hits audited in the background
+    exact_match=True,     # serve normalized exact repeats before embedding
 )
-
-# Streaming call: cached and replayed seamlessly
-stream = client.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role": "user", "content": "What is Python?"}],
-    stream=True,
-)
-for chunk in stream:
-    print(chunk.choices[0].delta.content or "", end="")
 ```
 
-### 5. LangChain & LlamaIndex Adapters
+Namespaces keep answers apart. Use a different namespace for each model, system prompt,
+or other input that changes the answer.
 
-Drop-in adapters for major AI application frameworks:
-
-```python
-# LangChain Integration
-from langchain_community.globals import set_llm_cache
-from semantic_cache.adapters.langchain import LangChainSemanticCache
-
-set_llm_cache(LangChainSemanticCache(threshold=0.88))
-
-# LlamaIndex Integration
-from llama_index.core import Settings
-from semantic_cache.adapters.llamaindex import LlamaIndexSemanticCache
-
-kv_cache = LlamaIndexSemanticCache(threshold=0.88)
-```
-
-### 6. Provider Embedders (OpenAI, Cohere, Ollama)
-
-Plug in your preferred embedding provider with automatic batching and L2 normalization:
-
-```python
-from semantic_cache import SemanticCache
-from semantic_cache.embedders import OpenAIEmbedder, CohereEmbedder, OllamaEmbedder
-
-# OpenAI embeddings
-cache = SemanticCache(embedder=OpenAIEmbedder(model="text-embedding-3-small"))
-
-# Cohere embeddings
-cache = SemanticCache(embedder=CohereEmbedder(model="embed-english-v3.0"))
-
-# Ollama local embeddings (offline / self-hosted)
-cache = SemanticCache(embedder=OllamaEmbedder(model="nomic-embed-text"))
-```
-
-### 7. Eviction Policies (LFU, FIFO, LRU)
-
-Control cache memory reclamation under `max_entries`:
+### Persistence
 
 ```python
 from semantic_cache import SemanticCache, SQLiteStore
 
-# LFU: evict least frequently used entries first
-store_lfu = SQLiteStore("cache.db", max_entries=50000, eviction_policy="lfu")
-
-# FIFO: evict oldest created entries first
-store_fifo = SQLiteStore("cache.db", max_entries=50000, eviction_policy="fifo")
-
-# LRU (default): evict least recently accessed entries
-store_lru = SQLiteStore("cache.db", max_entries=50000, eviction_policy="lru")
-
-cache = SemanticCache(store=store_lfu)
+store = SQLiteStore("cache.db", max_entries=50_000, eviction_policy="lru")  # lru | lfu | fifo
+cache = SemanticCache(store=store)
+...
+cache.close()   # flushes pending writes
 ```
 
-### 8. ANN Index Acceleration (FAISS / HNSW)
+Writes are batched and flushed in the background and on normal exit. Pass
+`batch_writes=False` to `SQLiteStore` if every write must be durable immediately.
 
-For large caches (> 10,000 entries), enable approximate nearest neighbor indexing:
+### Embedders
+
+| Embedder | Notes |
+|---|---|
+| `HashingEmbedder` | Offline, no dependencies. Good for repeats and small rewordings. |
+| `SentenceTransformerEmbedder` | Local model, real paraphrase matching. Needs the `transformers` extra. |
+| `OpenAIEmbedder`, `CohereEmbedder`, `OllamaEmbedder` | Hosted or self-hosted providers. |
+| `GeminiEmbedder` | Reads `GEMINI_API_KEY`. Output size is configurable (128 to 3072). |
 
 ```python
-from semantic_cache import SQLiteStore
+from semantic_cache import SemanticCache, SentenceTransformerEmbedder
 
-# Automatically uses FAISS when cache entries exceed ann_threshold (default: 10,000)
-store = SQLiteStore("cache.db", ann_backend="faiss", ann_threshold=10000)
+cache = SemanticCache(embedder=SentenceTransformerEmbedder(), threshold=0.85)
 ```
 
----
+API keys are read from environment variables or passed explicitly. They are never logged.
+
+### The hit guard and verifier
+
+For each candidate above the threshold the guard returns one of three verdicts:
+
+| Verdict | Meaning | Result |
+|---|---|---|
+| `ACCEPT` | No rule found a difference | Hit |
+| `REJECT` | A rule found a conflict (numbers, units, negation, symbols, direction, question type, quoted text, time-sensitive query) | Miss |
+| `VERIFY` | Words or roles differ in a way rules cannot settle (different entity in the same slot, swapped roles, different question frame) | Miss, unless a verifier approves |
+
+Without a verifier, `VERIFY` matches are treated as misses. This is the safe default and
+it lowers the hit rate on loosely worded paraphrases. To recover them, supply a verifier:
+
+```python
+from semantic_cache import SemanticCache, GeminiVerifier
+
+cache = SemanticCache(verifier=GeminiVerifier())    # uses GEMINI_API_KEY
+```
+
+Any callable `verifier(new_query, cached_query) -> bool` works, including a local model
+such as `CrossEncoderVerifier` (`transformers` extra). A verifier that errors or times out
+returns "no", so a failure produces a miss, not a wrong answer.
+
+Pairs the guard always sends to a verifier (swapped roles, a different entity in the same
+slot, a yes/no question matched to a how/why question) are verified even when
+`verify_always=False`.
+
+### Async and streaming
+
+```python
+answer = await cache.aask("Explain event loops", call_llm)       # sync or async callable
+
+for chunk in cache.get_or_compute_stream("Say hello", stream_llm):
+    print(chunk, end="")
+
+async for chunk in cache.async_get_or_compute_stream("Say hello", async_stream_llm):
+    print(chunk, end="")
+```
+
+A cached stream is replayed as a single chunk containing the full response.
+
+### Decorator
+
+```python
+from semantic_cache import cached
+
+@cached(ttl=600)
+def summarize(prompt: str, model: str = "small") -> str: ...
+```
+
+Arguments other than the prompt (here, `model`) are part of the cache key, so calls that
+differ only in those arguments never share an answer. Pass `bypass=True` to skip the cache
+for one call.
+
+### Framework adapters
+
+```python
+# OpenAI
+from openai import OpenAI
+from semantic_cache import SemanticCache, wrap_openai
+client = wrap_openai(OpenAI(), cache=SemanticCache(threshold=0.92))
+
+# LangChain
+from langchain_core.globals import set_llm_cache
+from semantic_cache import LangChainSemanticCache
+set_llm_cache(LangChainSemanticCache())
+```
+
+### Monitoring false hits (shadow mode)
+
+Shadow mode re-computes a sample of cache hits with the real model and compares the
+results, giving a measured false-hit rate from your own traffic.
+
+```python
+cache = SemanticCache(
+    shadow_rate=0.05,
+    shadow_comparator=lambda fresh, cached: are_equivalent(fresh, cached),
+)
+...
+cache.flush_shadow()
+print(cache.stats.estimated_false_hit_rate)
+```
+
+The estimate is only as good as the comparator. Comparing exact strings overstates false
+hits, because two correct answers rarely match character for character. About 300 audited
+hits with no mismatches support a false-hit rate below 1%.
+
+### Large caches (FAISS)
+
+```python
+store = SQLiteStore("cache.db", ann_backend="faiss", ann_threshold=10_000)
+```
+
+Below `ann_threshold` entries, search is exact brute force. Above it, FAISS HNSW is used
+and evicted entries are filtered from results until about a quarter of the index is stale,
+at which point the index is rebuilt.
+
+### Tuning the threshold
+
+```bash
+python tools/tune_threshold.py --csv pairs.csv
+```
+
+The CSV has the columns `query_a,query_b,should_hit`. The tool reports precision and
+recall for several thresholds with the guard on and off.
 
 ## Architecture
 
 ```
 SemanticCache
-├── Embedder         (text → unit vector)
-│   ├── HashingEmbedder          ← offline, character n-grams
-│   ├── SentenceTransformerEmbedder ← real paraphrase matching
-│   ├── OpenAIEmbedder / CohereEmbedder / OllamaEmbedder
-│   └── GeminiEmbedder
-└── SQLiteStore      (in-memory index + background persistence)
-    ├── Memory Matrix ← < 0.1 ms exact hash & SIMD cosine search
-    ├── ANN Backend   ← Optional FAISS / HNSW for large-scale indices
-    ├── Batched WAL   ← Non-blocking background persistence
-    └── Eviction      ← LRU, LFU, FIFO
+ |-- Exact tier        normalized-text hash -> stored answer
+ |-- Embedder          text -> unit vector (with an LRU cache of recent embeddings)
+ |-- SQLiteStore
+ |     |-- in-memory index    NumPy matrix, optional FAISS HNSW
+ |     |-- background writer  batched SQLite writes (WAL mode)
+ |     '-- eviction           LRU, LFU or FIFO under max_entries
+ |-- Hit guard         ACCEPT / VERIFY / REJECT per candidate
+ |-- Verifier          optional, decides VERIFY candidates
+ '-- Shadow audit      optional, samples hits against fresh model output
 ```
 
----
+A lookup proceeds in this order:
 
-## API Reference
+1. Normalize the query and check the exact tier.
+2. Embed the query (cached embeddings are reused).
+3. Find the nearest stored entries in the namespace at or above the threshold.
+4. Run the guard on the best candidate. `REJECT` ends the lookup as a miss.
+5. For `VERIFY`, call the verifier if one is configured; otherwise miss.
+6. On a hit, record usage for eviction and optionally schedule a shadow audit.
 
-### `SemanticCache(threshold, ttl, namespace, embedder, store, guard, shadow_rate)`
+Everything the cache stores lives in one SQLite file. Cross-process safety is limited to
+safe concurrent opening of a shared file; see [Limitations](#limitations).
 
-| Param | Default | Description |
-|-------|---------|-------------|
-| `threshold` | `0.85` | Minimum cosine similarity to count as a hit |
-| `ttl` | `None` | Seconds before entries expire (`None` = never) |
-| `namespace` | `"default"` | Partition key (per model / user / prompt version) |
-| `embedder` | `HashingEmbedder()` | Any embedder implementing `.embed(text)` and `.embed_batch(texts)` |
-| `store` | `SQLiteStore()` | In-memory index with batched SQLite persistence |
-| `guard` | `True` | Hit guard rejecting semantic collisions (C++/C#, x>5/x<5, km/miles) |
-| `shadow_rate` | `0.0` | Sampled background evaluation rate for false-hit monitoring |
+## Performance and accuracy
 
-### Core Methods
+Numbers come from `benchmarks/results_real.json`. Embeddings are real
+(`all-MiniLM-L6-v2`, 384 dimensions) and the questions are from the Quora Question Pairs
+dataset. The machine was a 12-thread Windows PC.
 
-```python
-# Synchronous API
-cache.get(query, namespace)                      # -> CacheResult | None
-cache.set(query, response, namespace)            # Store an entry
-cache.get_or_compute(query, compute_fn)          # Get cached or compute
-cache.get_or_compute_stream(query, stream_fn)   # Cached streaming
-cache.cached(namespace)(fn)                     # Sync/async decorator
-cache.clear(namespace)                           # Clear namespace or all
+### Lookup speed at 100,000 entries
 
-# Asynchronous API
-await cache.aget(query, namespace)               # -> CacheResult | None
-await cache.aset(query, response, namespace)     # Store entry asynchronously
-await cache.aask(query, compute_fn)              # Async get-or-compute
-cache.async_get_or_compute_stream(query, fn)     # Async stream generator
-```
-
----
-
-## Measured results (and honest limits)
-
-All numbers below come from `benchmarks/` and are stored in `benchmarks/results_real.json`.
-Embeddings are real (`all-MiniLM-L6-v2`, 384 dimensions); nothing here is synthetic.
-
-### Speed at 100,000 cached entries
-
-| | Brute force (NumPy) | FAISS HNSW |
+| | Brute force | FAISS HNSW |
 |---|---|---|
 | Exact repeat (p50) | 0.005 ms | 0.005 ms |
 | Semantic lookup (p50 / p99) | 3.58 ms / 4.10 ms | 0.20 ms / 0.34 ms |
 | Miss (p50) | 3.53 ms | 0.34 ms |
 | Index build | 10.7 s | 29.6 s |
-| Memory (RSS) | 1.13 GB | 1.53 GB |
-| FAISS recall@1 / recall@5 vs brute force | n/a | 98.1% / 98.3% |
-| Insert past capacity, mean / worst | 0.22 ms / 159 ms | 0.46 ms / 174 ms |
+| Memory | 1.13 GB | 1.53 GB |
+| Recall@1 against brute force | exact | 98.1% |
+| Insert past capacity (mean / worst) | 0.22 ms / 159 ms | 0.46 ms / 174 ms |
 
-FAISS is about 18x faster for semantic lookups at this size, at the cost of memory and
-a small recall loss. Exact repeats are served from a hash table at any size. Below
-roughly 10,000 entries brute force is fast enough and needs no extra dependency.
+Below roughly 10,000 entries brute force is fast enough and needs no extra dependency.
 
-### Accuracy on real labeled pairs (Quora Question Pairs, threshold 0.85)
+### Accuracy on labeled pairs
 
-1,000 true duplicate pairs and 1,000 non-duplicate pairs, decided by the real
+1,000 duplicate and 1,000 non-duplicate pairs at threshold 0.85, decided by
 `SemanticCache.get()`:
 
-| Setting | Duplicates served (recall) | Wrong answers served (per 1,000 non-duplicates) |
+| Setting | Duplicates served | Wrong answers served |
 |---|---|---|
 | Similarity only (`guard=False`) | 64.0% | 14.7% |
-| Guard on, defaults (no verifier) | 7.8% | 0.8% |
-| Guard on, `verify_always=False` (less strict) | 21.1% | 2.8% |
+| Guard on, no verifier (default) | 7.8% | 0.8% |
+| Guard on, `verify_always=False` | 21.1% | 2.8% |
 
-What this means:
+The guard serves about 18 times fewer wrong answers than similarity alone. Without a
+verifier it also serves far fewer correct paraphrases, because ambiguous matches are
+treated as misses. The Quora dataset is loosely labeled (some "non-duplicates" are
+reasonable paraphrases), so absolute values on your traffic will differ.
 
-- The guard cuts wrong answers by roughly 18x compared with pure similarity.
-- Without a verifier, ambiguous matches (the guard's `VERIFY` verdict) are treated as
-  misses. On loose paraphrases that is most of them, so recall is low. Configure a
-  `verifier` (for example `GeminiVerifier`) to recover them.
-- QQP is a hard, loosely labeled benchmark: some "non-duplicates" are real paraphrases.
-  Traffic where users repeat the same questions will hit far more often.
+Not yet measured: accuracy with a verifier, shadow-mode estimates against ground truth with
+a semantic comparator, FAISS on hnswlib at scale, and a comparison with other caches.
 
-### Not yet measured
-
-- Accuracy and recall **with** a verifier (live Gemini quota was exhausted; the local
-  cross-encoder is uncalibrated).
-- `estimated_false_hit_rate` against ground truth with a semantic comparator. A test with
-  an exact-string comparator overestimated (45% vs 16% true), so use a semantic comparator.
-- A head-to-head against GPTCache or other caches.
-- hnswlib at scale (it needs a C++ compiler on Windows). A small correctness test runs
-  only when hnswlib is installed.
-
-### Known limits
-
-- Single process: each process keeps its own in-memory index and does not see another
-  process's new writes until it reloads.
-- Writes are batched (about 50 ms) and flushed on exit; a hard kill can lose the last few
-  writes. Use `SQLiteStore(batch_writes=False)` for immediate durability.
-- Brute-force search is exact but grows linearly with entries.
-
-### Reproduce
+To reproduce:
 
 ```bash
-python tests/benchmark.py                          # offline speed, no key needed
-python benchmarks/real_embeddings.py --part 12     # real-embedding speed + accuracy
-python benchmarks/guard_rules.py                   # which guard rules block what
+python tests/benchmark.py                        # offline speed, no keys
+python benchmarks/real_embeddings.py --part 12   # real-embedding speed and accuracy
+python benchmarks/guard_rules.py                 # which guard rules block which pairs
 ```
 
----
+## Limitations
 
-## Verification & Testing Transparency
+- Single process. Each process keeps its own in-memory index and does not see entries
+  written by another process until it reloads.
+- Writes are batched (about 50 ms) and flushed on normal exit. A hard kill can lose the
+  last few writes.
+- Brute-force search is exact but linear in the number of entries.
+- The guard is rule-based and English-oriented. It does not understand meaning, which is
+  why ambiguous cases are sent to a verifier or treated as misses.
+- The database file is not encrypted. Do not cache secrets or personal data without your
+  own retention and access controls. See [SECURITY.md](SECURITY.md).
 
-To ensure complete honesty and clarity regarding performance and testing, here is the breakdown of what has been verified with live external APIs versus offline mocks:
-
-### Verified Live
-- **Gemini Embeddings (`gemini-embedding-001`)**:
-  - Live API integration with Google Generative Language endpoint verified.
-  - Unit normalization of truncated Matryoshka vectors (`norm == 1.000000`) verified live across dimensions 768, 1536, and 3072.
-  - Pairwise cosine similarities for the 9 canonical paraphrase and negative test pairs measured live from Google's endpoint at all three dimensions.
-- **SQLite Storage & Vector Indexing**:
-  - File-based SQLite insert performance measured live on disk across 3,000, 10,000, and 30,000 entries (demonstrating constant amortized ~0.85 ms/op scaling with geometric doubling).
-  - Steady-state 10,000-entry full-cache eviction benchmarked live on disk (0.862 ms/op with batch 90% eviction and in-place array compaction, a 162× speedup over the previous single-row deletion and index reload).
-  - Multi-process schema migration safety with `BEGIN IMMEDIATE` verified live using two independent OS Python processes executed concurrently against legacy database schemas.
-- **Guard & Shadow Mode Execution**:
-  - Lexical and semantic entity guards (`check_match`) verified across all candidate pairs.
-  - Shadow evaluation thread pool verified to execute asynchronously in the background without adding any delay to user-facing responses.
-- **Gemini Verifier Endpoint Network Roundtrip**:
-  - Live HTTP calls to `gemini-2.5-flash:generateContent` executed across 99 labeled pairs; measured real roundtrip network latency (p50: 562 ms, p95: 743 ms).
-
-### Verified with Mocks
-- **Gemini Text Generation & Verifier Content Parsing**:
-  - Text generation (`GeminiClient.generate` and `GeminiVerifier.verify`) requires active Google Cloud `generateContent` quota. When the free tier daily quota (20 requests/day per model) is exhausted, Google returns `HTTP 429: Quota exceeded`.
-  - The 5 live LLM generation tests in `pytest` (`test_live_gemini_*` and `test_live_verifier_*`) cleanly skip when encountering HTTP 429 quota exhaustion.
-  - LLM response equivalence decision-making was verified using mocked Gemini clients returning deterministic 'yes' / 'no' candidates.
-
----
-
-## Running the Demo
+## Development
 
 ```bash
-python demo.py
+pip install -e ".[dev]"
+python -m ruff check .
+python -m pytest -q -m "not live"
 ```
 
----
+Tests that call live APIs are marked `live` and need a key and quota; the rest run offline.
+CI runs lint, the tests and a package build on Python 3.10 to 3.13.
+
+Repository layout:
+
+```
+semantic_cache/   library code (cache, store, embedders, guard, verifier, adapters)
+tests/            unit and regression tests
+benchmarks/       reproducible speed and accuracy benchmarks and recorded results
+tools/            threshold tuning
+```
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+1. Open an issue to discuss larger changes before writing code.
+2. Create a branch, make focused commits, and add tests for any behavior change.
+3. Run `ruff check .` and `pytest` locally. Tests must not call the network.
+4. Open a pull request that explains what changed and why.
+
+Please report security issues privately through GitHub Security Advisories, not in
+public issues.
+
+## Security
+
+Cached responses are stored in plain text. `CacheContext` and namespaces partition data
+but are not an authorization mechanism. See [SECURITY.md](SECURITY.md).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
