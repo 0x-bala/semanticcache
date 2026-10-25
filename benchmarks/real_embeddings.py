@@ -635,7 +635,10 @@ def run_part2b_gemini_sample(pairs: list[dict[str, Any]]) -> dict[str, Any]:
             json.dump(cached_vecs, f)
 
     # Evaluate similarities for available pairs
-    eval_pairs = [p for p in sample_pairs if p["query"] in cached_vecs and p["cached_q"] in cached_vecs]
+    eval_pairs = [
+        p for p in sample_pairs
+        if p["query"] in cached_vecs and p["cached_q"] in cached_vecs
+    ]
     dup_sims = []
     non_dup_sims = []
 

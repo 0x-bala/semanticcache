@@ -37,7 +37,7 @@ import torch  # noqa: E402
 from transformers import AutoModel, AutoTokenizer  # noqa: E402
 
 from semantic_cache.cache import SemanticCache  # noqa: E402
-from semantic_cache.guard import GuardVerdict, check_match  # noqa: E402
+from semantic_cache.guard import check_match  # noqa: E402
 from semantic_cache.store import SQLiteStore  # noqa: E402
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -68,7 +68,8 @@ class LocalMiniLMEmbedder:
         ).to(self.device)
         with torch.no_grad():
             outputs = self.model(**inputs)
-            mask = inputs["attention_mask"].unsqueeze(-1).expand(outputs.last_hidden_state.size()).float()
+            att_mask = inputs["attention_mask"].unsqueeze(-1)
+            mask = att_mask.expand(outputs.last_hidden_state.size()).float()
             sum_emb = torch.sum(outputs.last_hidden_state * mask, 1)
             sum_mask = torch.clamp(mask.sum(1), min=1e-9)
             mean_pooled = sum_emb / sum_mask
@@ -101,7 +102,11 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
     corpus_file = os.path.join(DATA_DIR, "corpus_questions.json")
     corpus_vecs_file = os.path.join(DATA_DIR, "corpus_384.npy")
 
-    if not (os.path.exists(pairs_file) and os.path.exists(corpus_file) and os.path.exists(corpus_vecs_file)):
+    if not (
+        os.path.exists(pairs_file)
+        and os.path.exists(corpus_file)
+        and os.path.exists(corpus_vecs_file)
+    ):
         raise FileNotFoundError("Prerequisite data files missing in benchmarks/data/")
 
     with open(pairs_file, encoding="utf-8") as f:
@@ -135,7 +140,10 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
     )
 
     # 1. Initialize store and seed with 10k real questions
-    print(f"Seeding cache with {seed_corpus_size} real QQP questions (embedder={cache._embedder_name})...")
+    print(
+        f"Seeding cache with {seed_corpus_size} real QQP questions "
+        f"(embedder={cache._embedder_name})..."
+    )
     # Seed with the first 10,000 corpus entries (which include the cached_q for the pairs)
     for i in range(seed_corpus_size):
         q = corpus[i]
@@ -173,7 +181,9 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
     rng = random.Random(42)
     rng.shuffle(stream)
 
-    print(f"Replaying stream of {len(stream)} queries through SemanticCache with shadow_rate=1.0...")
+    print(
+        f"Replaying stream of {len(stream)} queries through SemanticCache with shadow_rate=1.0..."
+    )
     total_queries = len(stream)
     hits = 0
     misses = 0
@@ -198,7 +208,8 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
             else:
                 ground_truth_false_hits += 1
                 # Record detailed mismatch
-                g_verdict = check_match(q, res.matched_query).verdict.value if res.matched_query else "UNKNOWN"
+                matched = res.matched_query
+                g_verdict = check_match(q, matched).verdict.value if matched else "UNKNOWN"
                 mismatches.append({
                     "query": q,
                     "matched_query": res.matched_query,
@@ -223,20 +234,29 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
     shadow_errors = stats.shadow_errors
 
     est_false_hit_rate = stats.estimated_false_hit_rate
-    wilson_low, wilson_high = wilson_score_interval(shadow_mismatches, max(1, shadow_matches + shadow_mismatches))
+    wilson_low, wilson_high = wilson_score_interval(
+        shadow_mismatches, max(1, shadow_matches + shadow_mismatches)
+    )
     rule_of_three = round(3.0 / max(1, shadow_evals), 4) if shadow_mismatches == 0 else None
 
     true_false_hit_rate = round(ground_truth_false_hits / max(1, hits), 4)
 
     print("\n--- SHADOW MODE RESULTS ---")
-    print(f"Total Stream Queries: {total_queries} in {elapsed:.2f}s ({round(total_queries/elapsed, 1)} qps)")
+    qps = round(total_queries / elapsed, 1)
+    print(f"Total Stream Queries: {total_queries} in {elapsed:.2f}s ({qps} qps)")
     print(f"Cache Hits: {hits} | Misses: {misses}")
     print(f"Shadow Evaluations Triggered: {shadow_evals}")
     print(f"Shadow Matches: {shadow_matches}")
     print(f"Shadow Mismatches: {shadow_mismatches}")
     print(f"Shadow Errors: {shadow_errors}")
-    print(f"Estimated False-Hit Rate: {est_false_hit_rate:.4f} (Wilson 95% CI: [{wilson_low}, {wilson_high}])")
-    print(f"True False-Hit Rate (from labels): {true_false_hit_rate:.4f} ({ground_truth_false_hits} / {hits})")
+    print(
+        f"Estimated False-Hit Rate: {est_false_hit_rate:.4f} "
+        f"(Wilson 95% CI: [{wilson_low}, {wilson_high}])"
+    )
+    print(
+        f"True False-Hit Rate (from labels): {true_false_hit_rate:.4f} "
+        f"({ground_truth_false_hits} / {hits})"
+    )
     print(f"Mismatches Captured: {len(mismatches)}")
 
     part4_data = {
@@ -287,7 +307,9 @@ def run_shadow_benchmark(stream_size: int = 600, seed_corpus_size: int = 10000) 
 
 def main():
     parser = argparse.ArgumentParser(description="Run shadow mode benchmark on real prompts.")
-    parser.add_argument("--stream-size", type=int, default=600, help="Number of real prompts in stream")
+    parser.add_argument(
+        "--stream-size", type=int, default=600, help="Number of real prompts in stream"
+    )
     args = parser.parse_args()
 
     run_shadow_benchmark(stream_size=args.stream_size)
