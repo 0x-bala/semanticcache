@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 from semantic_cache import HashingEmbedder, SemanticCache, SQLiteStore
 from semantic_cache.cache import _default_is_cacheable
+
+_HAS_SENTENCE_TRANSFORMERS = importlib.util.find_spec("sentence_transformers") is not None
 
 # ---------------------------------------------------------------------------
 # is_cacheable
@@ -191,7 +195,17 @@ class TestCrossEncoderVerifierThreshold:
     cross-encoder/stsb-roberta-base returns 0..1, so the default was
     unreachable and the verifier never accepted anything. These tests use a
     mocked model so an unreachable default can never go unnoticed again.
+
+    The four tests that monkeypatch ``sentence_transformers.CrossEncoder``
+    skip when sentence-transformers is not installed (base install); the
+    validation test below still runs because it only exercises the import
+    guard inside CrossEncoderVerifier.__init__.
     """
+
+    pytestmark = pytest.mark.skipif(
+        not _HAS_SENTENCE_TRANSFORMERS,
+        reason="needs sentence-transformers (not in the base dev install)",
+    )
 
     def _verifier_with_mocked_model(self, monkeypatch, score: float):
         from semantic_cache.cross_encoder import CrossEncoderVerifier
