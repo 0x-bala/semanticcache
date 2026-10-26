@@ -24,6 +24,7 @@ cohere = ["cohere>=5.0.0"]
 langchain = ["langchain-core>=0.1.0"]
 llama-index = ["llama-index-core>=0.10.0"]
 web = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+ollama = ["ollama>=0.4.0"]
 all = [
     "faiss-cpu>=1.7.0",
     "openai>=1.0.0",
@@ -31,6 +32,7 @@ all = [
     "langchain-core>=0.1.0",
     "llama-index-core>=0.10.0",
     "sentence-transformers>=2.2",
+    "ollama>=0.4.0",
 ]
 dev = ["anyio>=4.0", "build>=1.2", "pytest>=7.4", "pytest-cov>=4.0", "ruff>=0.6"]
 
