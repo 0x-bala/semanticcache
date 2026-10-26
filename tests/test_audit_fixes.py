@@ -20,20 +20,17 @@ class TestIsCacheable:
         assert _default_is_cacheable("   ") is False
         assert _default_is_cacheable("\t\n") is False
 
-    def test_default_rejects_short(self) -> None:
-        assert _default_is_cacheable("a") is False
-        assert _default_is_cacheable("ab") is False
-
-    def test_default_accepts_three_chars(self) -> None:
-        assert _default_is_cacheable("abc") is True
-
-    def test_default_accepts_longer(self) -> None:
-        assert _default_is_cacheable("hello world") is True
-
     def test_default_rejects_non_string(self) -> None:
         assert _default_is_cacheable(None) is False  # type: ignore[arg-type]
         assert _default_is_cacheable(42) is False  # type: ignore[arg-type]
         assert _default_is_cacheable([]) is False  # type: ignore[arg-type]
+
+    def test_default_accepts_short_legitimate(self) -> None:
+        assert _default_is_cacheable("42") is True
+        assert _default_is_cacheable("Paris") is True
+
+    def test_default_accepts_longer(self) -> None:
+        assert _default_is_cacheable("hello world") is True
 
     def test_custom_predicate(self) -> None:
         def reject_errors(r: str) -> bool:
@@ -62,11 +59,11 @@ class TestGetOrComputeIsCacheable:
         )
 
         def compute(_q: str) -> str:
-            return "ab"  # too short
+            return "I don't know"  # blocked by default is_cacheable
 
         result = cache.get_or_compute("hello world", compute)
         assert result.hit is False
-        assert result.response == "ab"
+        assert result.response == "I don't know"
         assert cache.store.size() == 0  # nothing stored
 
     def test_error_string_not_cached(self) -> None:

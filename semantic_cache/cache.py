@@ -268,9 +268,42 @@ ShadowComparator = Callable[[str, str], bool]
 CacheableCallback = Callable[[str], bool]
 
 
+_BLOCKED_PHRASES = (
+    "i don't know",
+    "the question is unclear",
+    "no question was provided",
+)
+
+
+def _normalize_for_blocklist(response: str) -> str:
+    """Normalize a response for blocklist comparison.
+
+    Lowercases, replaces the curly apostrophe (\\u2019) with a straight
+    quote, and strips trailing punctuation and whitespace.
+    """
+    normalized = response.lower().replace("\u2019", "'").strip()
+    # Strip trailing ".! " so "I don't know." matches "i don't know".
+    normalized = normalized.rstrip(".! ")
+    return normalized
+
+
 def _default_is_cacheable(response: str) -> bool:
-    """Default predicate: reject empty strings and strings shorter than 3 characters."""
-    return isinstance(response, str) and len(response.strip()) >= 3
+    """Default predicate: reject empty strings and known refusal phrases.
+
+    Empty responses stay blocked. Legitimate short answers such as "42" or
+    "Paris" are still cached. The following responses are never stored:
+
+    - "I don't know"
+    - "The question is unclear"
+    - "No question was provided"
+
+    Comparison is done with ``startswith`` after normalization, so
+    "I don't know the answer." is also blocked.
+    """
+    if not isinstance(response, str) or not response.strip():
+        return False
+    normalized = _normalize_for_blocklist(response)
+    return not any(normalized.startswith(phrase) for phrase in _BLOCKED_PHRASES)
 
 
 # ---------------------------------------------------------------------------

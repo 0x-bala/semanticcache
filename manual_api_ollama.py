@@ -41,6 +41,20 @@ from semantic_cache import (
 # ---------------------------------------------------------------------------
 # Configuration — change these to match your hardware and preference
 # ---------------------------------------------------------------------------
+SYSTEM_PROMPT = """You answer factual questions for a cache. Reply in plain text only.
+
+- Start with the answer. No greeting, no filler.
+- Use one or two short sentences.
+- Name the subject in full. Never say "it" or "this".
+- Do not use words like "today", "now" or "currently".
+- If you don't know, say: I don't know.
+- If the question is unclear, say: The question is unclear.
+- Never add extra offers of help or follow-up questions.
+
+Example:
+Question: Who wrote Hamlet?
+Answer: Hamlet was written by William Shakespeare."""
+
 LLM_MODEL = "llama3.2:3b"          # 3B fits 4 GB VRAM; use :8b for 8 GB cards
 EMBEDDER_MODEL = "nomic-embed-text"  # Ollama embedding model
 FAISS_ANN_THRESHOLD = 10_000        # switch to FAISS HNSW above 10k entries
@@ -99,12 +113,41 @@ class AskRequest(BaseModel):
         return v
 
 
+def _build_chat_payload(prompt: str, model: str) -> dict[str, Any]:
+    """Build the /api/chat payload: system prompt first, then the user message.
+
+    keep_alive is a top-level field (not inside options).
+    """
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt.strip()},
+        ],
+        "stream": False,
+        "keep_alive": "30m",
+        "options": {
+            "temperature": 0,
+            "seed": 42,
+            "num_predict": 120,
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+        },
+    }
+
+
 def _generate(prompt: str, model: str) -> str:
-    """Call the local Ollama model synchronously."""
-    response = ollama.generate(model=model, prompt=prompt)
-    text = response.get("response", "")
+    """Call the local Ollama model synchronously via /api/chat.
+
+    Raises ``ConnectionError`` if Ollama returns no usable text so that
+    ``/ask`` can convert it to a 502 without caching the failure.
+    """
+    payload = _build_chat_payload(prompt, model)
+    response = ollama.chat(**payload)
+    message = getattr(response, "message", None)
+    text = getattr(message, "content", "") if message is not None else ""
     if not text:
-        raise RuntimeError("Ollama returned an empty response")
+        raise ConnectionError("Ollama returned an empty response")
     return text
 
 
@@ -131,8 +174,10 @@ async def ask(request: AskRequest) -> dict[str, Any]:
             lambda p: _generate(p, model),
             request.namespace,
         )
-    except ollama.OllamaError as exc:
+    except (ollama.RequestError, ollama.ResponseError) as exc:
         raise HTTPException(status_code=502, detail=f"Ollama error: {exc}") from exc
+    except (ConnectionError, TimeoutError) as exc:
+        raise HTTPException(status_code=502, detail=f"Ollama unreachable: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
