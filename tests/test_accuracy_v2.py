@@ -145,11 +145,12 @@ def test_cross_encoder_verifier_is_optional_and_uses_model_score(monkeypatch):
             self.kwargs = kwargs
 
         def predict(self, pairs):
-            return np.array([4.7 if pairs[0][0] == "same" else 2.0], dtype=np.float32)
+            # The default STS model returns scores on a 0..1 scale.
+            return np.array([0.95 if pairs[0][0] == "same" else 0.5], dtype=np.float32)
 
     fake_module.CrossEncoder = FakeCrossEncoder
     monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
-    verifier = CrossEncoderVerifier(threshold=4.25)
+    verifier = CrossEncoderVerifier(threshold=0.9)
     assert verifier("same", "pair") is True
     assert verifier("different", "pair") is False
 

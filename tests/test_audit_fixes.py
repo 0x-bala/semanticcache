@@ -179,3 +179,69 @@ class TestOllamaEmbedderDimensions:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# CrossEncoderVerifier default threshold (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestCrossEncoderVerifierThreshold:
+    """The default threshold was 4.25 on a 0..5 scale, but
+    cross-encoder/stsb-roberta-base returns 0..1, so the default was
+    unreachable and the verifier never accepted anything. These tests use a
+    mocked model so an unreachable default can never go unnoticed again.
+    """
+
+    def _verifier_with_mocked_model(self, monkeypatch, score: float):
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+        class _FakeModel:
+            def predict(self, pairs, **kwargs):
+                import numpy as np
+
+                return np.asarray([score] * len(pairs))
+
+        monkeypatch.setattr(
+            "sentence_transformers.CrossEncoder",
+            lambda *a, **kw: _FakeModel(),
+        )
+        return CrossEncoderVerifier()
+
+    def test_default_threshold_is_0_9(self, monkeypatch) -> None:
+        verifier = self._verifier_with_mocked_model(monkeypatch, 0.5)
+        assert verifier.threshold == 0.9
+
+    def test_default_accepts_score_at_threshold(self, monkeypatch) -> None:
+        verifier = self._verifier_with_mocked_model(monkeypatch, 0.9)
+        assert verifier("a", "b") is True
+
+    def test_default_rejects_below_threshold(self, monkeypatch) -> None:
+        verifier = self._verifier_with_mocked_model(monkeypatch, 0.5)
+        assert verifier("a", "b") is False
+
+    def test_default_rejects_non_finite_score(self, monkeypatch) -> None:
+        import numpy as np
+
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+        class _NaNModel:
+            def predict(self, pairs, **kwargs):
+                return np.asarray([float("nan")] * len(pairs))
+
+        monkeypatch.setattr(
+            "sentence_transformers.CrossEncoder",
+            lambda *a, **kw: _NaNModel(),
+        )
+        verifier = CrossEncoderVerifier()
+        assert verifier("a", "b") is False
+
+    def test_threshold_must_be_in_0_1(self, monkeypatch) -> None:
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+        monkeypatch.setattr(
+            "sentence_transformers.CrossEncoder",
+            lambda *a, **kw: None,
+        )
+        with pytest.raises(ValueError, match="0.0 and 1.0"):
+            CrossEncoderVerifier(threshold=4.25)
