@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import pathlib
 import sys
+import threading
+from collections import OrderedDict
 
 import numpy as np
 import pytest
@@ -402,6 +404,10 @@ class TestStrictVerifierValidation:
 
         cev = object.__new__(CrossEncoderVerifier)
         cev.threshold = 0.85
+        cev.max_cache_size = 1000
+        cev._cache = OrderedDict()
+        cev._cache_lock = threading.Lock()
+        cev._inflight = {}
         cev._last_pair = None
         cev._last_score = None
 
@@ -414,15 +420,13 @@ class TestStrictVerifierValidation:
         assert cev("q1", "q2") is False
 
         # NumPy bool
-        cev._last_pair = None
-        cev._last_score = None
+        cev.clear_cache()
         cev.model.predict = lambda pairs: [np.bool_(True)]
         assert cev.score("q1", "q2") is None
         assert cev("q1", "q2") is False
 
         # Valid score
-        cev._last_pair = None
-        cev._last_score = None
+        cev.clear_cache()
         cev.model.predict = lambda pairs: [0.95]
         assert cev.score("q1", "q2") == pytest.approx(0.95)
         assert cev("q1", "q2") is True
@@ -433,6 +437,10 @@ class TestStrictVerifierValidation:
 
         cev = object.__new__(CrossEncoderVerifier)
         cev.threshold = 0.85
+        cev.max_cache_size = 1000
+        cev._cache = OrderedDict()
+        cev._cache_lock = threading.Lock()
+        cev._inflight = {}
         cev._last_pair = None
         cev._last_score = None
 
