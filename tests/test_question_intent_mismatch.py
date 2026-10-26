@@ -112,38 +112,38 @@ class TestSemanticCacheQuestionIntent:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not pytest.importorskip("sentence_transformers", reason="needs sentence-transformers"),
-    reason="sentence-transformers not installed",
-)
+@pytest.mark.skipif(not _HAS_SENTENCE_TRANSFORMERS, reason="needs sentence-transformers")
 class TestHardNegativesWithRealVerifier:
     """The hard negatives from the intent table must remain misses even when
     the question-intent rule is downgraded to VERIFY."""
-
-    @pytest.fixture(scope="class")
-    def verifier(self):
-        from semantic_cache.cross_encoder import CrossEncoderVerifier
-
-        return CrossEncoderVerifier(threshold=0.9)
-
-    @pytest.fixture(scope="class")
-    def cache(self, verifier):
-        cache = SemanticCache(
-            embedder=HashingEmbedder(),
-            store=SQLiteStore(":memory:"),
-            threshold=0.85,
-            exact_match=False,
-            verifier=verifier,
-            allow_question_intent_mismatch=True,
-        )
-        for cached_q, _ in HARD_NEGATIVES:
-            cache.set(cached_q, f"answer to {cached_q}")
-        return cache
 
     @pytest.mark.parametrize(
         "cached_q,new_q",
         HARD_NEGATIVES,
         ids=[n for _, n in HARD_NEGATIVES],
     )
-    def test_hard_negative_is_miss(self, cache, cached_q, new_q) -> None:
-        assert cache.get(new_q) is None
+    def test_hard_negative_is_miss(self, real_verifier_cache, cached_q, new_q) -> None:
+        assert real_verifier_cache.get(new_q) is None
+
+
+@pytest.fixture(scope="module")
+def real_verifier_cache():
+    """A cache with the real CrossEncoderVerifier and the intent rule
+    downgraded, seeded with every hard-negative pair. Module-scoped so the
+    model is loaded once per session (avoids the class-scoped fixture
+    deprecation warning)."""
+    from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+    verifier = CrossEncoderVerifier(threshold=0.9)
+    cache = SemanticCache(
+        embedder=HashingEmbedder(),
+        store=SQLiteStore(":memory:"),
+        threshold=0.85,
+        exact_match=False,
+        verifier=verifier,
+        allow_question_intent_mismatch=True,
+    )
+    for cached_q, _ in HARD_NEGATIVES:
+        cache.set(cached_q, f"answer to {cached_q}")
+    yield cache
+    cache.close(close_store=True)

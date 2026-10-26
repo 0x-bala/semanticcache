@@ -559,6 +559,21 @@ def _semantic_numeric_facts(tokens: list[str]) -> list[tuple[str, str, str]]:
     return facts
 
 
+def _facts_by_kind(
+    facts: list[tuple[str, str, str]],
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Group numeric facts by kind, preserving relative order within each kind.
+
+    Order between different kinds is ignored, so "How many miles is 10
+    kilometers?" and "Convert 10 km to miles" compare equal even though their
+    tokens appear in a different sequence.
+    """
+    grouped: dict[str, list[tuple[str, str, str]]] = {}
+    for fact in facts:
+        grouped.setdefault(fact[0], []).append(fact)
+    return grouped
+
+
 def _content_tokens_with_unit_dimensions(tokens: list[str]) -> list[str]:
     """Normalize already-validated number/unit pairs for word-overlap checks."""
     result: list[str] = []
@@ -693,9 +708,14 @@ def check_match(
 
     # Ordered number/unit facts catch swapped values and permit only explicit,
     # exact linear conversions such as 1 hour == 60 minutes.
+    # Facts are compared per kind (quantity / number / unit), preserving order
+    # within each kind but ignoring order between kinds. Range swaps stay
+    # detectable because the two scalars of a range are the same kind and keep
+    # their relative order; "Convert 10 km to miles" vs "Convert 10 miles to
+    # km" still differ because the unit facts are the same kind and differ.
     facts_new = _semantic_numeric_facts(tokens_new)
     facts_cached = _semantic_numeric_facts(tokens_cached)
-    if facts_new != facts_cached:
+    if _facts_by_kind(facts_new) != _facts_by_kind(facts_cached):
         return GuardResult(
             GuardVerdict.REJECT,
             f"Ordered number/unit facts differ: {facts_new} vs {facts_cached}",

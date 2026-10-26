@@ -984,7 +984,11 @@ class SemanticCache:
                         try:
                             verifier_score = self._verifier_score(query, entry.query)
                             best_verifier_score = verifier_score
-                            verified = bool(verifier_score >= self._verifier_threshold())
+                            if verifier_score is not None and self._verifier_threshold() is not None:
+                                verified = bool(verifier_score >= self._verifier_threshold())
+                            else:
+                                # Plain bool verifier: no score to expose.
+                                verified = bool(self.verifier(query, entry.query))
                         except Exception as exc:
                             logger.warning("Verifier raised exception during explain: %s", exc)
                             verified = False
@@ -992,12 +996,13 @@ class SemanticCache:
                             best_entry = entry
                             decision = "verifier_reject"
                             continue
+                    best_entry = entry
+                    decision = "hit_verified"
+                    break
+                # ACCEPT: guard approved without verification.
                 best_entry = entry
-                decision = "hit_verified"
+                decision = "hit_guard_accept"
                 break
-            best_entry = entry
-            decision = "hit_guard_accept"
-            break
 
         return {
             "best_candidate": (
