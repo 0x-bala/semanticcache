@@ -186,9 +186,20 @@ Any callable `verifier(new_query, cached_query) -> bool` works, including a loca
 such as `CrossEncoderVerifier` (`transformers` extra). A verifier that errors or times out
 returns "no", so a failure produces a miss, not a wrong answer.
 
-Pairs the guard always sends to a verifier (swapped roles, a different entity in the same
-slot, a yes/no question matched to a how/why question) are verified even when
-`verify_always=False`.
+**Conservative verification policy**: A `VERIFY` verdict is _always_ adjudicated — it
+can never be bypassed by a high cosine similarity score. `verify_always=False` is retained
+for backward compatibility but does not affect `VERIFY` handling. `REJECT` verdicts cannot
+be overridden by a permissive verifier. If multiple candidates exist, the cache continues
+searching after a rejection or failed verification.
+
+### Security and correctness note
+
+The hit guard is a finite set of lexical rules, not a semantic equivalence proof. It catches
+known confusion patterns (numbers, units, negation, operators, entity slots, question type)
+but cannot guarantee that two queries produce the same correct answer. For production use
+cases where correctness is critical, always configure a verifier. Namespace and
+`CacheContext` partitioning separates data but is not an authorization boundary — do not
+rely on it alone for tenant isolation without your own access controls.
 
 ### Async and streaming
 

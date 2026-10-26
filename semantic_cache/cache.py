@@ -347,13 +347,20 @@ class SemanticCache:
         When ``True`` (default), run semantic hit guard on candidate hits to
         prevent number mismatches, unit inversions, and entity slot substitutions.
     guard_buffer:
-        Score range [threshold, threshold + guard_buffer] subject to VERIFY.
-        Candidates above this threshold skip VERIFY, but still apply REJECT rules.
-        Default is 0.03.
+        Reserved for future use. The buffer no longer exempts a VERIFY candidate
+        from verification; see ``verify_always``.
     verifier:
         Optional callable ``verifier(new_query, cached_query) -> bool`` called
-        when guard returns VERIFY within the borderline buffer. If None, VERIFY
-        is treated as a cache miss.
+        whenever the guard returns VERIFY. If None, VERIFY is treated as a
+        cache miss. The verifier is also called on exceptions/timeouts, which
+        are treated as a miss.
+    verify_always:
+        Backward-compatible flag, now a no-op for the VERIFY path. Previously,
+        when False, a VERIFY candidate above ``threshold + guard_buffer`` could
+        be served without verification. That bypass is removed: VERIFY is always
+        adjudicated when a verifier is configured, and is always a miss without
+        one. Set True to restore the old behaviour in future if a non-default
+        policy is introduced.
     exact_match:
         When ``True`` (default), check normalized query hash first to return
         immediate exact hits without calling the embedder.
@@ -653,7 +660,6 @@ class SemanticCache:
         ns = _validate_namespace(namespace or self.namespace)
         eff_threshold = _validate_threshold(threshold) if threshold is not None else self.threshold
         use_guard = self.guard if guard is None else guard
-        eff_verify_always = self.verify_always if verify_always is None else verify_always
 
         # Relative-time prompts are never reused by this cache. This avoids stale
         # results for wording such as "current price" or "latest version".
@@ -747,6 +753,14 @@ class SemanticCache:
             return None
 
         # Evaluate candidates from highest to lowest score.
+        # Conservative verification policy (fail closed):
+        #   REJECT  -> skip the candidate and keep searching.
+        #   VERIFY  -> never serve without an explicit verifier approval.
+        #              No verifier configured, or the verifier raises / times
+        #              out / returns a falsy or invalid result -> treat as a
+        #              miss and keep searching. Similarity score and
+        #              verify_always=False can never override a VERIFY verdict.
+        #   ACCEPT  -> serve the cached answer.
         accepted_entry = None
         for entry in candidates or []:
             if entry is None or entry.score < eff_threshold:
@@ -766,23 +780,29 @@ class SemanticCache:
                     self.stats.guard_rejects += 1
                     continue
                 if guard_result.verdict == GuardVerdict.VERIFY:
-                    should_verify = (
-                        eff_verify_always
-                        or guard_result.must_verify
-                        or entry.score < eff_threshold + self.guard_buffer
-                    )
-                    if should_verify:
-                        if self.verifier is None:
-                            continue
-                        self.stats.verify_calls += 1
-                        try:
-                            verified = bool(self.verifier(query, entry.query))
-                        except Exception as exc:
-                            logger.warning("Verifier raised exception: %s", exc)
-                            verified = False
-                        if not verified:
-                            continue
-                        self.stats.verify_accepts += 1
+                    # VERIFY is ambiguous: it must be adjudicated, never served
+                    # on the strength of a high cosine score.
+                    if self.verifier is None:
+                        logger.debug(
+                            "Guard VERIFY candidate id=%s has no verifier: "
+                            "treating as miss", entry.id,
+                        )
+                        continue
+                    self.stats.verify_calls += 1
+                    try:
+                        verified = bool(self.verifier(query, entry.query))
+                    except Exception as exc:
+                        logger.warning(
+                            "Verifier raised exception for candidate id=%s: %s",
+                            entry.id, exc,
+                        )
+                        verified = False
+                    if not verified:
+                        logger.debug(
+                            "Verifier rejected candidate id=%s", entry.id
+                        )
+                        continue
+                    self.stats.verify_accepts += 1
             accepted_entry = entry
             break
 
@@ -854,7 +874,6 @@ class SemanticCache:
         ns = _validate_namespace(namespace or self.namespace)
         eff_threshold = _validate_threshold(threshold) if threshold is not None else self.threshold
         use_guard = self.guard if guard is None else guard
-        eff_verify_always = self.verify_always if verify_always is None else verify_always
 
         if is_time_sensitive_query(query):
             return {
@@ -971,32 +990,29 @@ class SemanticCache:
                     decision = "guard_reject"
                     continue
                 if guard_result.verdict == GuardVerdict.VERIFY:
-                    should_verify = (
-                        eff_verify_always
-                        or guard_result.must_verify
-                        or entry.score < eff_threshold + self.guard_buffer
-                    )
-                    if should_verify:
-                        if self.verifier is None:
-                            best_entry = entry
-                            decision = "verifier_reject"
-                            continue
-                        try:
-                            verifier_score = self._verifier_score(query, entry.query)
-                            best_verifier_score = verifier_score
-                            threshold = self._verifier_threshold()
-                            if verifier_score is not None and threshold is not None:
-                                verified = bool(verifier_score >= threshold)
-                            else:
-                                # Plain bool verifier: no score to expose.
-                                verified = bool(self.verifier(query, entry.query))
-                        except Exception as exc:
-                            logger.warning("Verifier raised exception during explain: %s", exc)
-                            verified = False
-                        if not verified:
-                            best_entry = entry
-                            decision = "verifier_reject"
-                            continue
+                    # VERIFY is ambiguous: it must be adjudicated, never served
+                    # on the strength of a high cosine score.
+                    if self.verifier is None:
+                        best_entry = entry
+                        decision = "verifier_reject"
+                        continue
+                    try:
+                        verifier_score = self._verifier_score(query, entry.query)
+                        best_verifier_score = verifier_score
+                        threshold = self._verifier_threshold()
+                        if verifier_score is not None and threshold is not None:
+                            verified = bool(verifier_score >= threshold)
+                        else:
+                            # Plain bool verifier: no score to expose.
+                            verified = bool(self.verifier(query, entry.query))
+                    except Exception as exc:
+                        logger.warning("Verifier raised exception during explain: %s", exc)
+                        verified = False
+                    if not verified:
+                        best_entry = entry
+                        decision = "verifier_reject"
+                        continue
+                    # Verifier approved
                     best_entry = entry
                     decision = "hit_verified"
                     break
