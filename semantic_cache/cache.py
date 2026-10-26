@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import math
 import random
 import threading
 import time
@@ -351,9 +352,10 @@ class SemanticCache:
         from verification; see ``verify_always``.
     verifier:
         Optional callable ``verifier(new_query, cached_query) -> bool`` called
-        whenever the guard returns VERIFY. If None, VERIFY is treated as a
-        cache miss. The verifier is also called on exceptions/timeouts, which
-        are treated as a miss.
+        whenever the guard returns VERIFY. Must return the Python boolean ``True``
+        to approve. Any other return value (False, strings, numbers, None, objects)
+        or exception is treated as a rejection. If None, VERIFY is treated as a
+        cache miss.
     verify_always:
         Backward-compatible flag, now a no-op for the VERIFY path. Previously,
         when False, a VERIFY candidate above ``threshold + guard_buffer`` could
@@ -497,7 +499,8 @@ class SemanticCache:
                 pass  # fall through to next method
         if self.verifier is not None:
             try:
-                return self.verifier(fresh, cached)
+                res = self.verifier(fresh, cached)
+                return res is True
             except Exception:
                 return fresh.strip().lower() == cached.strip().lower()
         return fresh.strip() == cached.strip()
@@ -602,6 +605,18 @@ class SemanticCache:
         verifier = self.verifier
         if verifier is None:
             return None
+        # Check if verifier has a score callable
+        score_fn = getattr(verifier, "score", None)
+        if callable(score_fn):
+            try:
+                s = score_fn(query_a, query_b)
+                if not isinstance(s, bool) and isinstance(s, (int, float)):
+                    val = float(s)
+                    if math.isfinite(val):
+                        return val
+            except Exception:
+                return None
+        # Check if verifier has a model with predict (e.g. CrossEncoder)
         model = getattr(verifier, "model", None)
         if model is None or not hasattr(model, "predict"):
             return None
@@ -609,8 +624,10 @@ class SemanticCache:
             import numpy as np
 
             scores = np.asarray(model.predict([[query_a, query_b]])).reshape(-1)
-            if scores.size == 1 and np.isfinite(scores[0]):
-                return float(scores[0])
+            if scores.size == 1:
+                val = float(scores[0])
+                if math.isfinite(val):
+                    return val
         except Exception:
             return None
         return None
@@ -621,9 +638,54 @@ class SemanticCache:
         if verifier is None:
             return None
         threshold = getattr(verifier, "threshold", None)
-        if isinstance(threshold, (int, float)):
-            return float(threshold)
+        if not isinstance(threshold, bool) and isinstance(threshold, (int, float)):
+            val = float(threshold)
+            if math.isfinite(val):
+                return val
         return None
+
+    def _verify_candidate(self, query: str, candidate_query: str) -> tuple[bool, float | None]:
+        """Adjudicate a VERIFY candidate using the configured verifier.
+
+        A candidate is approved ONLY if the verifier returns the actual Python
+        Boolean ``True``. If the verifier exposes a numeric score and threshold,
+        the score and threshold must also be valid, finite numbers satisfying
+        ``score >= threshold``.
+
+        All other outcomes (``False``, ``None``, strings, integers, unexpected
+        objects, malformed/non-finite scores, or exceptions) are treated as rejection.
+        """
+        if self.verifier is None:
+            return False, None
+
+        verifier_score = self._verifier_score(query, candidate_query)
+        threshold = self._verifier_threshold()
+
+        # If the verifier exposes both score and threshold interfaces, validate them strictly.
+        has_score_interface = (
+            callable(getattr(self.verifier, "score", None))
+            or hasattr(getattr(self.verifier, "model", None), "predict")
+        )
+        has_threshold_interface = hasattr(self.verifier, "threshold")
+
+        if has_score_interface and has_threshold_interface:
+            if verifier_score is None or threshold is None:
+                return False, verifier_score
+            if not (math.isfinite(verifier_score) and math.isfinite(threshold)):
+                return False, verifier_score
+            if verifier_score < threshold:
+                return False, verifier_score
+
+        try:
+            raw_result = self.verifier(query, candidate_query)
+        except Exception as exc:
+            logger.warning("Verifier raised exception: %s", exc)
+            return False, verifier_score
+
+        if raw_result is not True:
+            return False, verifier_score
+
+        return True, verifier_score
 
     def get(
         self,
@@ -789,14 +851,7 @@ class SemanticCache:
                         )
                         continue
                     self.stats.verify_calls += 1
-                    try:
-                        verified = bool(self.verifier(query, entry.query))
-                    except Exception as exc:
-                        logger.warning(
-                            "Verifier raised exception for candidate id=%s: %s",
-                            entry.id, exc,
-                        )
-                        verified = False
+                    verified, _ = self._verify_candidate(query, entry.query)
                     if not verified:
                         logger.debug(
                             "Verifier rejected candidate id=%s", entry.id
@@ -996,18 +1051,8 @@ class SemanticCache:
                         best_entry = entry
                         decision = "verifier_reject"
                         continue
-                    try:
-                        verifier_score = self._verifier_score(query, entry.query)
-                        best_verifier_score = verifier_score
-                        threshold = self._verifier_threshold()
-                        if verifier_score is not None and threshold is not None:
-                            verified = bool(verifier_score >= threshold)
-                        else:
-                            # Plain bool verifier: no score to expose.
-                            verified = bool(self.verifier(query, entry.query))
-                    except Exception as exc:
-                        logger.warning("Verifier raised exception during explain: %s", exc)
-                        verified = False
+                    verified, verifier_score = self._verify_candidate(query, entry.query)
+                    best_verifier_score = verifier_score
                     if not verified:
                         best_entry = entry
                         decision = "verifier_reject"
@@ -1019,6 +1064,7 @@ class SemanticCache:
                 # ACCEPT: guard approved without verification.
                 best_entry = entry
                 decision = "hit_guard_accept"
+                best_verifier_score = None
                 break
 
         return {

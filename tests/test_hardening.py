@@ -97,11 +97,11 @@ class MultiVectorEmbedder:
 def _make_cache(embedder=None, **kwargs) -> SemanticCache:
     emb = embedder or ConstantEmbedder()
     store = SQLiteStore(path=":memory:", embedding_dim=getattr(emb, "dim", DIM))
+    kwargs.setdefault("threshold", 0.85)
+    kwargs.setdefault("exact_match", False)
     return SemanticCache(
         embedder=emb,
         store=store,
-        threshold=0.85,
-        exact_match=False,
         **kwargs,
     )
 
@@ -179,6 +179,173 @@ class TestVerifyBypassPrevention:
         assert result is None
 
 
+class TestStrictVerifierValidation:
+    """Strict boolean validation: only Python Boolean True authorizes a hit."""
+
+    @pytest.mark.parametrize(
+        "invalid_return",
+        [
+            "false",
+            "true",
+            1,
+            0,
+            None,
+            {"approved": True},
+            [1, 2, 3],
+            object(),
+            "YES",
+            "1",
+        ],
+    )
+    def test_non_boolean_verifier_return_is_rejection(self, invalid_return):
+        """Truthy and falsy non-boolean returns must be treated as rejection."""
+        cache = _make_cache(verifier=lambda a, b: invalid_return)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None, f"Verifier return {invalid_return!r} must not authorize hit"
+
+    def test_actual_boolean_true_approves(self):
+        """Actual Python bool True authorizes a hit."""
+        cache = _make_cache(verifier=lambda a, b: True)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is not None
+        assert result.hit is True
+        assert result.response == "Elon Musk"
+
+    def test_actual_boolean_false_rejects(self):
+        """Actual Python bool False rejects a candidate."""
+        cache = _make_cache(verifier=lambda a, b: False)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None
+
+    def test_verifier_exception_rejects(self):
+        """Verifier raising an exception is treated as a rejection."""
+
+        def bad_verifier(a, b):
+            raise ValueError("network error / timeout")
+
+        cache = _make_cache(verifier=bad_verifier)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        assert cache.get("Who is the CEO of Apple?") is None
+
+    @pytest.mark.parametrize("invalid_return", ["false", "true", 1, 0, None, object()])
+    def test_explain_rejects_invalid_verifier_return(self, invalid_return):
+        """explain() must report verifier_reject for non-boolean returns."""
+        cache = _make_cache(verifier=lambda a, b: invalid_return)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+
+    @pytest.mark.parametrize("invalid_return", ["true", 1, "false", None])
+    def test_async_rejects_invalid_verifier_return(self, invalid_return):
+        """aget() rejects non-boolean returns."""
+        cache = _make_cache(verifier=lambda a, b: invalid_return)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+
+        async def _lookup():
+            return await cache.aget("Who is the CEO of Apple?")
+
+        assert asyncio.run(_lookup()) is None
+
+    @pytest.mark.parametrize("invalid_return", ["true", 1, "false", None])
+    def test_streaming_rejects_invalid_verifier_return(self, invalid_return):
+        """get_or_compute_stream() does not replay on non-boolean return."""
+        cache = _make_cache(verifier=lambda a, b: invalid_return)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+
+        def compute_stream(q):
+            yield "Tim "
+            yield "Cook"
+
+        chunks = list(cache.get_or_compute_stream("Who is the CEO of Apple?", compute_stream))
+        assert "".join(chunks) == "Tim Cook"
+
+    def test_verifier_with_valid_score_and_threshold(self):
+        """Verifier with score and threshold authorizes hit when score >= threshold and True."""
+
+        class MockScoringVerifier:
+            threshold = 0.85
+
+            def score(self, a, b):
+                return 0.92
+
+            def __call__(self, a, b):
+                return True
+
+        cache = _make_cache(verifier=MockScoringVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is not None
+        assert result.hit is True
+
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "hit_verified"
+        assert exp["verifier_score"] == pytest.approx(0.92)
+
+    def test_verifier_with_score_below_threshold(self):
+        """Verifier exposing score < threshold rejects even if callable returned True."""
+
+        class MockScoringVerifier:
+            threshold = 0.85
+
+            def score(self, a, b):
+                return 0.80
+
+            def __call__(self, a, b):
+                return True
+
+        cache = _make_cache(verifier=MockScoringVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None
+
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+
+    @pytest.mark.parametrize("bad_score", [float("nan"), float("inf"), float("-inf")])
+    def test_verifier_with_non_finite_score(self, bad_score):
+        """Verifier with NaN or Inf score is rejected."""
+
+        class MockScoringVerifier:
+            threshold = 0.85
+
+            def score(self, a, b):
+                return bad_score
+
+            def __call__(self, a, b):
+                return True
+
+        cache = _make_cache(verifier=MockScoringVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None
+
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+
+    def test_verifier_with_score_returning_non_boolean_call(self):
+        """Verifier with score >= threshold but returning 'true' (string) is rejected."""
+
+        class MockScoringVerifier:
+            threshold = 0.85
+
+            def score(self, a, b):
+                return 0.95
+
+            def __call__(self, a, b):
+                return "true"
+
+        cache = _make_cache(verifier=MockScoringVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None
+
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+
+
 # ===========================================================================
 # 2. REJECT cannot be overridden
 # ===========================================================================
@@ -227,28 +394,111 @@ class TestCandidateSearchContinuation:
     """After rejecting a candidate, the cache must continue searching."""
 
     def test_rejected_first_candidate_allows_later_match(self):
-        """If first candidate is rejected but second is accepted, return second."""
+        """If first candidate is rejected by guard, search continues and returns second."""
         emb = MultiVectorEmbedder()
-        # All three get nearly identical vectors (same direction)
-        shared_vec = np.zeros(DIM, dtype=np.float32)
-        shared_vec[0] = 1.0
-        emb.register_vec("Enable the setting", shared_vec)
-        emb.register_vec("Enable dark mode", shared_vec)
-        emb.register_vec("Disable the setting", shared_vec)
+        q_vec = np.zeros(DIM, dtype=np.float32)
+        q_vec[0] = 1.0
 
-        cache = _make_cache(embedder=emb, top_k=10)
-        cache.set("Enable the setting", "Settings enabled")
-        cache.set("Enable dark mode", "Dark mode enabled")
+        # Candidate 1: cosine similarity 0.98 with query
+        c1_vec = np.zeros(DIM, dtype=np.float32)
+        c1_vec[0] = 0.98
+        c1_vec[1] = np.sqrt(1.0 - 0.98**2, dtype=np.float32)
 
-        # "Disable the setting" should REJECT "Enable the setting" (antonym)
-        # and should VERIFY "Enable dark mode" (different content words).
-        # Without a verifier, the best outcome is that REJECT doesn't block
-        # further search (the candidate loop should continue).
-        cache.get("Disable the setting")
-        # Both candidates should be checked — the first rejected, second also
-        # rejected or VERIFY'd as miss (no verifier).
-        # The key test: no exception, and guard_rejects > 0
+        # Candidate 2: cosine similarity 0.90 with query (still above threshold 0.85)
+        c2_vec = np.zeros(DIM, dtype=np.float32)
+        c2_vec[0] = 0.90
+        c2_vec[2] = np.sqrt(1.0 - 0.90**2, dtype=np.float32)
+
+        q_text = "What is the capital of France?"
+        c1_text = "What is not the capital of France?"  # Negation conflict -> REJECT
+        c2_text = "Capital city of France?"            # Acceptable paraphrase -> ACCEPT
+
+        emb.register_vec(q_text, q_vec)
+        emb.register_vec(c1_text, c1_vec)
+        emb.register_vec(c2_text, c2_vec)
+
+        cache = _make_cache(embedder=emb, threshold=0.85, top_k=5)
+        cache.set(c1_text, "Response 1 (Not Paris)")
+        cache.set(c2_text, "Response 2 (Paris)")
+
+        result = cache.get(q_text)
+        assert result is not None, "Candidate search stopped early instead of falling through"
+        assert result.hit is True
+        assert result.matched_query == c2_text
+        assert result.response == "Response 2 (Paris)"
+        assert result.score == pytest.approx(0.90, abs=1e-3)
         assert cache.stats.guard_rejects >= 1
+
+    def test_verifier_rejected_first_candidate_allows_later_match(self):
+        """If first candidate is rejected by verifier, search continues and returns second."""
+        emb = MultiVectorEmbedder()
+        q_vec = np.zeros(DIM, dtype=np.float32)
+        q_vec[0] = 1.0
+
+        # Candidate 1: cosine similarity 0.98
+        c1_vec = np.zeros(DIM, dtype=np.float32)
+        c1_vec[0] = 0.98
+        c1_vec[1] = np.sqrt(1.0 - 0.98**2, dtype=np.float32)
+
+        # Candidate 2: cosine similarity 0.90
+        c2_vec = np.zeros(DIM, dtype=np.float32)
+        c2_vec[0] = 0.90
+        c2_vec[2] = np.sqrt(1.0 - 0.90**2, dtype=np.float32)
+
+        q_text = "Who is the CEO of Apple?"
+        c1_text = "Who is the CEO of Tesla?"  # Guard VERIFY -> verifier returns False
+        c2_text = "Who is Apple CEO?"          # Guard VERIFY -> verifier returns True
+
+        emb.register_vec(q_text, q_vec)
+        emb.register_vec(c1_text, c1_vec)
+        emb.register_vec(c2_text, c2_vec)
+
+        def selective_verifier(query, candidate):
+            if "Apple" in candidate:
+                return True
+            return False
+
+        cache = _make_cache(embedder=emb, threshold=0.85, top_k=5, verifier=selective_verifier)
+        cache.set(c1_text, "Elon Musk")
+        cache.set(c2_text, "Tim Cook")
+
+        result = cache.get(q_text)
+        assert result is not None, "Candidate search stopped early instead of falling through"
+        assert result.hit is True
+        assert result.matched_query == c2_text
+        assert result.response == "Tim Cook"
+        assert result.score == pytest.approx(0.90, abs=1e-3)
+
+    def test_explain_candidate_fallback_parity(self):
+        """explain() reports the correct accepted candidate when earlier candidate was rejected."""
+        emb = MultiVectorEmbedder()
+        q_vec = np.zeros(DIM, dtype=np.float32)
+        q_vec[0] = 1.0
+
+        c1_vec = np.zeros(DIM, dtype=np.float32)
+        c1_vec[0] = 0.98
+        c1_vec[1] = np.sqrt(1.0 - 0.98**2, dtype=np.float32)
+
+        c2_vec = np.zeros(DIM, dtype=np.float32)
+        c2_vec[0] = 0.90
+        c2_vec[2] = np.sqrt(1.0 - 0.90**2, dtype=np.float32)
+
+        q_text = "What is the capital of France?"
+        c1_text = "What is not the capital of France?"  # REJECT
+        c2_text = "Capital city of France?"            # ACCEPT
+
+        emb.register_vec(q_text, q_vec)
+        emb.register_vec(c1_text, c1_vec)
+        emb.register_vec(c2_text, c2_vec)
+
+        cache = _make_cache(embedder=emb, threshold=0.85, top_k=5)
+        cache.set(c1_text, "Not Paris")
+        cache.set(c2_text, "Paris")
+
+        exp = cache.explain(q_text)
+        assert exp["decision"] == "hit_guard_accept"
+        assert exp["best_candidate"]["query"] == c2_text
+        assert exp["best_candidate"]["score"] == pytest.approx(0.90, abs=1e-3)
 
 
 # ===========================================================================
