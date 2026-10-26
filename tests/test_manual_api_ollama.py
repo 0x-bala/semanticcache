@@ -138,15 +138,38 @@ class TestChatPayloadBuilder:
 
 @pytest.fixture
 def client(monkeypatch):
-    """TestClient with a stubbed embedder and in-memory store so the
-    lifespan succeeds offline and tests are isolated."""
+    """TestClient with a stubbed embedder, in-memory store, and NO verifier,
+    so the lifespan succeeds offline and tests are isolated."""
     monkeypatch.setattr(manual_api_ollama, "OllamaEmbedder", _StubEmbedder)
+    monkeypatch.setattr(manual_api_ollama, "_build_verifier", lambda: None)
 
     _orig_sqlite_store = manual_api_ollama.SQLiteStore
 
     class _MemoryStore(_orig_sqlite_store):
         def __init__(self, *args, **kwargs):
             # Drop any positional path / ann_backend; force an in-memory store.
+            args = (":memory:",)
+            kwargs.pop("path", None)
+            kwargs.pop("ann_backend", None)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(manual_api_ollama, "SQLiteStore", _MemoryStore)
+
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def client_with_verifier(monkeypatch):
+    """Same as ``client`` but with a stubbed verifier present, so /health
+    can be checked in both states."""
+    monkeypatch.setattr(manual_api_ollama, "OllamaEmbedder", _StubEmbedder)
+    monkeypatch.setattr(manual_api_ollama, "_build_verifier", lambda: object())
+
+    _orig_sqlite_store = manual_api_ollama.SQLiteStore
+
+    class _MemoryStore(_orig_sqlite_store):
+        def __init__(self, *args, **kwargs):
             args = (":memory:",)
             kwargs.pop("path", None)
             kwargs.pop("ann_backend", None)
@@ -239,6 +262,26 @@ class TestAskEndpoint:
         )
 
         assert response.status_code == 422
+
+
+class TestHealthVerifierField:
+    def test_health_verifier_false_when_absent(self, client) -> None:
+        """/health must report verifier=false when no verifier is configured."""
+        response = client.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["verifier"] is False
+        assert "stats" in body
+        assert "verify_calls" in body["stats"]
+        assert "verify_accepts" in body["stats"]
+
+    def test_health_verifier_true_when_present(self, client_with_verifier) -> None:
+        """/health must report verifier=true when a verifier is configured."""
+        response = client_with_verifier.get("/health")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["verifier"] is True
+        assert "stats" in body
 
 
 if __name__ == "__main__":

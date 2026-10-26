@@ -16,6 +16,7 @@ Run:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -37,6 +38,8 @@ from semantic_cache import (
     SemanticCache,
     SQLiteStore,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration — change these to match your hardware and preference
@@ -60,11 +63,30 @@ EMBEDDER_MODEL = "nomic-embed-text"  # Ollama embedding model
 FAISS_ANN_THRESHOLD = 10_000        # switch to FAISS HNSW above 10k entries
 CACHE_THRESHOLD = 0.85              # minimum cosine similarity for a hit
 CACHE_TTL = 3600                    # 1 hour TTL
+VERIFIER_THRESHOLD = 0.9            # cross-encoder score floor (0..1 scale)
+
+
+def _build_verifier():
+    """Build the CrossEncoderVerifier, or None if sentence-transformers is absent."""
+    try:
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+    except ImportError as exc:
+        logger.warning(
+            "sentence-transformers not installed; running without a verifier. "
+            "Install with: pip install -e '.[transformers]'. (%s)",
+            exc,
+        )
+        return None
+    try:
+        return CrossEncoderVerifier(threshold=VERIFIER_THRESHOLD)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not initialise CrossEncoderVerifier: %s", exc)
+        return None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Initialise the LLM client, embedder, and cache on startup."""
+    """Initialise the LLM client, embedder, cache, and verifier on startup."""
     app.state.llm_model = LLM_MODEL
 
     try:
@@ -77,6 +99,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             f"ollama pull {EMBEDDER_MODEL}"
         ) from exc
 
+    verifier = _build_verifier()
+    app.state.verifier = verifier
+
     store = SQLiteStore(
         "manual_ollama_cache.db",
         ann_backend="faiss",
@@ -87,6 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         store=store,
         threshold=CACHE_THRESHOLD,
         ttl=CACHE_TTL,
+        verifier=verifier,
     )
     try:
         yield
@@ -154,12 +180,14 @@ def _generate(prompt: str, model: str) -> str:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     cache: SemanticCache = app.state.cache
+    stats = cache.get_stats()
     return {
         "status": "ok",
         "llm_model": app.state.llm_model,
         "embedder": cache.embedder.__class__.__name__,
+        "verifier": app.state.verifier is not None,
         "entries": cache.store.size(),
-        "stats": cache.get_stats(),
+        "stats": stats,
     }
 
 
