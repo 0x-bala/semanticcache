@@ -458,6 +458,30 @@ class TestSemanticCacheBasic:
         with pytest.raises(ValueError):
             cache.set("q", "")
 
+    def test_empty_query_is_handled_as_a_miss(self):
+        cache, _ = self._make()
+
+        assert cache.get("") is None
+        assert cache.get("   ") is None
+
+    @pytest.mark.parametrize("query", [None, 123, ["q"]])
+    def test_non_string_query_raises_type_error(self, query):
+        cache, _ = self._make()
+
+        with pytest.raises(TypeError, match="query must be a string"):
+            cache.get(query)
+        with pytest.raises(TypeError, match="query must be a string"):
+            cache.set(query, "response")
+        with pytest.raises(TypeError, match="query must be a string"):
+            cache.get_or_compute(query, lambda _: "response")
+
+    @pytest.mark.parametrize("response", [None, 123, ["response"]])
+    def test_non_string_response_raises_value_error(self, response):
+        cache, _ = self._make()
+
+        with pytest.raises(ValueError, match="response must be a non-empty string"):
+            cache.set("q", response)
+
     def test_invalid_threshold_raises(self):
         with pytest.raises(ValueError):
             SemanticCache(threshold=1.5)
