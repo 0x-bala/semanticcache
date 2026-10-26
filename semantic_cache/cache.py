@@ -609,11 +609,16 @@ class SemanticCache:
         score_fn = getattr(verifier, "score", None)
         if callable(score_fn):
             try:
+                import numpy as np
+
                 s = score_fn(query_a, query_b)
-                if not isinstance(s, bool) and isinstance(s, (int, float)):
-                    val = float(s)
-                    if math.isfinite(val):
-                        return val
+                if isinstance(s, (bool, np.bool_)):
+                    return None
+                if not np.issubdtype(type(s), np.number) and not isinstance(s, (int, float)):
+                    return None
+                val = float(s)
+                if math.isfinite(val):
+                    return val
             except Exception:
                 return None
         # Check if verifier has a model with predict (e.g. CrossEncoder)
@@ -625,7 +630,14 @@ class SemanticCache:
 
             scores = np.asarray(model.predict([[query_a, query_b]])).reshape(-1)
             if scores.size == 1:
-                val = float(scores[0])
+                item = scores[0]
+                if isinstance(item, (bool, np.bool_)) or scores.dtype == bool:
+                    return None
+                if not (
+                    np.issubdtype(scores.dtype, np.number) or isinstance(item, (int, float))
+                ):
+                    return None
+                val = float(item)
                 if math.isfinite(val):
                     return val
         except Exception:
@@ -638,10 +650,20 @@ class SemanticCache:
         if verifier is None:
             return None
         threshold = getattr(verifier, "threshold", None)
-        if not isinstance(threshold, bool) and isinstance(threshold, (int, float)):
+        try:
+            import numpy as np
+
+            if isinstance(threshold, (bool, np.bool_)):
+                return None
+            if not (
+                np.issubdtype(type(threshold), np.number) or isinstance(threshold, (int, float))
+            ):
+                return None
             val = float(threshold)
             if math.isfinite(val):
                 return val
+        except Exception:
+            return None
         return None
 
     def _verify_candidate(self, query: str, candidate_query: str) -> tuple[bool, float | None]:

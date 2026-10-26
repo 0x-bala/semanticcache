@@ -10,6 +10,7 @@ dataset.
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -55,12 +56,47 @@ class CrossEncoderVerifier:
         self.model_name = model_name
         self.threshold = float(threshold)
         self.model = CrossEncoder(model_name, **kwargs)
+        self._last_pair: tuple[str, str] | None = None
+        self._last_score: float | None = None
+
+    def score(self, query_a: str, query_b: str) -> float | None:
+        """Return the raw predicted similarity score, or None if invalid/non-finite."""
+        if self._last_pair == (query_a, query_b):
+            return self._last_score
+
+        import numpy as np
+
+        try:
+            scores = np.asarray(self.model.predict([[query_a, query_b]])).reshape(-1)
+        except Exception:
+            return None
+
+        if scores.size != 1:
+            return None
+
+        raw_val = scores[0]
+        # Reject Python boolean and NumPy boolean scores
+        if isinstance(raw_val, (bool, np.bool_)) or scores.dtype == bool:
+            return None
+
+        if not np.issubdtype(scores.dtype, np.number) and not isinstance(raw_val, (int, float)):
+            return None
+
+        try:
+            val = float(raw_val)
+        except Exception:
+            return None
+
+        if not math.isfinite(val):
+            return None
+
+        self._last_pair = (query_a, query_b)
+        self._last_score = val
+        return val
 
     def __call__(self, query_a: str, query_b: str) -> bool:
         """Return True when the cross-encoder score meets the configured threshold."""
-        import numpy as np
-
-        scores = np.asarray(self.model.predict([[query_a, query_b]])).reshape(-1)
-        if scores.size != 1 or not np.isfinite(scores[0]):
+        val = self.score(query_a, query_b)
+        if val is None:
             return False
-        return float(scores[0]) >= self.threshold
+        return val >= self.threshold

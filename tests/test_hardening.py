@@ -345,6 +345,114 @@ class TestStrictVerifierValidation:
         exp = cache.explain("Who is the CEO of Apple?")
         assert exp["decision"] == "verifier_reject"
 
+    @pytest.mark.parametrize(
+        "bool_prediction",
+        [True, False, np.bool_(True), np.bool_(False), [True], [False], [np.bool_(True)]],
+    )
+    def test_model_prediction_boolean_rejected(self, bool_prediction):
+        """Model predictions of Python bool or NumPy bool are rejected as invalid scores."""
+
+        class FakeModelVerifier:
+            threshold = 0.5
+
+            class FakeModel:
+                def predict(self, pairs):
+                    return [bool_prediction]
+
+            model = FakeModel()
+
+            def __call__(self, a, b):
+                return True
+
+        cache = _make_cache(verifier=FakeModelVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        result = cache.get("Who is the CEO of Apple?")
+        assert result is None, f"Boolean prediction {bool_prediction!r} must not authorize hit"
+
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+        assert exp["verifier_score"] is None
+
+    @pytest.mark.parametrize(
+        "bool_score",
+        [True, False, np.bool_(True), np.bool_(False)],
+    )
+    def test_score_method_boolean_rejected(self, bool_score):
+        """Verifier score() returning Python or NumPy boolean is rejected."""
+
+        class MockBooleanScoreVerifier:
+            threshold = 0.5
+
+            def score(self, a, b):
+                return bool_score
+
+            def __call__(self, a, b):
+                return True
+
+        cache = _make_cache(verifier=MockBooleanScoreVerifier())
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        assert cache.get("Who is the CEO of Apple?") is None
+        exp = cache.explain("Who is the CEO of Apple?")
+        assert exp["decision"] == "verifier_reject"
+        assert exp["verifier_score"] is None
+
+    def test_cross_encoder_rejects_boolean_prediction(self):
+        """CrossEncoderVerifier.__call__ and score() reject boolean predictions."""
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+        cev = object.__new__(CrossEncoderVerifier)
+        cev.threshold = 0.85
+        cev._last_pair = None
+        cev._last_score = None
+
+        class FakeModel:
+            def predict(self, pairs):
+                return [True]
+
+        cev.model = FakeModel()
+        assert cev.score("q1", "q2") is None
+        assert cev("q1", "q2") is False
+
+        # NumPy bool
+        cev._last_pair = None
+        cev._last_score = None
+        cev.model.predict = lambda pairs: [np.bool_(True)]
+        assert cev.score("q1", "q2") is None
+        assert cev("q1", "q2") is False
+
+        # Valid score
+        cev._last_pair = None
+        cev._last_score = None
+        cev.model.predict = lambda pairs: [0.95]
+        assert cev.score("q1", "q2") == pytest.approx(0.95)
+        assert cev("q1", "q2") is True
+
+    def test_cross_encoder_memoizes_single_inference_per_pair(self):
+        """Score calculation and __call__ reuse model prediction without duplicate inference."""
+        from semantic_cache.cross_encoder import CrossEncoderVerifier
+
+        cev = object.__new__(CrossEncoderVerifier)
+        cev.threshold = 0.85
+        cev._last_pair = None
+        cev._last_score = None
+
+        class CountingModel:
+            def __init__(self):
+                self.calls = 0
+
+            def predict(self, pairs):
+                self.calls += 1
+                return [0.95]
+
+        cev.model = CountingModel()
+        cache = _make_cache(verifier=cev)
+        cache.set("Who is the CEO of Tesla?", "Elon Musk")
+        res = cache.get("Who is the CEO of Apple?")
+        assert res is not None
+        assert res.hit is True
+        # Model predict should only be called once for this pair
+        assert cev.model.calls == 1
+
 
 # ===========================================================================
 # 2. REJECT cannot be overridden
