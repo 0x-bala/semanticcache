@@ -92,6 +92,24 @@ else:
     cache.set("What is the capital of France?", answer)
 ```
 
+### Try it through a local API
+
+The optional FastAPI demo exposes `/ask` and `/health`. It uses Gemini for both
+embeddings and text generation, uses FAISS HNSW for similarity search starting
+with the first cached entry, and persists entries in `manual_demo_cache.db`.
+Install the web and FAISS extras, add `GEMINI_API_KEY=your_gemini_api_key` to a
+local `.env` file, and tell Uvicorn to load it:
+
+```powershell
+pip install -e ".[web,ann]"
+uvicorn manual_api:app --reload --env-file .env
+```
+
+Open `http://127.0.0.1:8000/docs` to try the endpoints interactively. Send a prompt
+to `POST /ask`; send the same prompt again to see `cache_hit: true`. `/health`
+reports cache statistics. This demo has no authentication, so keep it bound to
+localhost and do not expose it publicly.
+
 ## Usage
 
 ### Configuration
