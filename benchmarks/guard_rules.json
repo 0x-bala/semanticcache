@@ -1,0 +1,107 @@
+[
+  {
+    "verdict": "ACCEPT",
+    "rule": "Acceptable paraphrase with one-sided or safe word additions",
+    "on_duplicates": 43,
+    "on_non_duplicates": 5,
+    "dup_share": 0.896
+  },
+  {
+    "verdict": "ACCEPT",
+    "rule": "Exact match after normalization",
+    "on_duplicates": 13,
+    "on_non_duplicates": 0,
+    "dup_share": 1.0
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Question intent differs",
+    "on_duplicates": 180,
+    "on_non_duplicates": 228,
+    "dup_share": 0.441
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Ordered number/unit facts differ",
+    "on_duplicates": 50,
+    "on_non_duplicates": 90,
+    "dup_share": 0.357
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Significant symbols or operators differ",
+    "on_duplicates": 36,
+    "on_non_duplicates": 76,
+    "dup_share": 0.321
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Relative-time query is time-sensitive",
+    "on_duplicates": 32,
+    "on_non_duplicates": 36,
+    "dup_share": 0.471
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Directional relation order differs",
+    "on_duplicates": 21,
+    "on_non_duplicates": 24,
+    "dup_share": 0.467
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Negation or scope words differ",
+    "on_duplicates": 14,
+    "on_non_duplicates": 25,
+    "dup_share": 0.359
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Quoted text differs",
+    "on_duplicates": 1,
+    "on_non_duplicates": 4,
+    "dup_share": 0.2
+  },
+  {
+    "verdict": "REJECT",
+    "rule": "Negation or lexical antonym flip detected",
+    "on_duplicates": 2,
+    "on_non_duplicates": 2,
+    "dup_share": 0.5
+  },
+  {
+    "verdict": "VERIFY",
+    "rule": "Different slot values on both sides",
+    "on_duplicates": 279,
+    "on_non_duplicates": 224,
+    "dup_share": 0.555
+  },
+  {
+    "verdict": "VERIFY",
+    "rule": "Question frame differs",
+    "on_duplicates": 116,
+    "on_non_duplicates": 148,
+    "dup_share": 0.439
+  },
+  {
+    "verdict": "VERIFY",
+    "rule": "Directional markers differ",
+    "on_duplicates": 97,
+    "on_non_duplicates": 84,
+    "dup_share": 0.536
+  },
+  {
+    "verdict": "VERIFY",
+    "rule": "One-sided content addition",
+    "on_duplicates": 105,
+    "on_non_duplicates": 52,
+    "dup_share": 0.669
+  },
+  {
+    "verdict": "VERIFY",
+    "rule": "Content words appear in different order",
+    "on_duplicates": 11,
+    "on_non_duplicates": 2,
+    "dup_share": 0.846
+  }
+]
