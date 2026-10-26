@@ -30,7 +30,7 @@ except ImportError:
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from semantic_cache import (
     OllamaEmbedder,
@@ -55,11 +55,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     try:
         embedder = OllamaEmbedder(model_name=EMBEDDER_MODEL)
-    except Exception:
-        # Fall back to a local SentenceTransformer embedder if Ollama is not
-        # available or the embedding model is not pulled.
-        from semantic_cache import SentenceTransformerEmbedder
-        embedder = SentenceTransformerEmbedder()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not connect to Ollama at startup for embeddings "
+            f"(model={EMBEDDER_MODEL!r}): {exc}. "
+            "Start the Ollama server and pull the model: "
+            f"ollama pull {EMBEDDER_MODEL}"
+        ) from exc
 
     store = SQLiteStore(
         "manual_ollama_cache.db",
@@ -88,6 +90,13 @@ app = FastAPI(
 class AskRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=32_768)
     namespace: str = Field(default="ollama-demo", min_length=1, max_length=256)
+
+    @field_validator("prompt")
+    @classmethod
+    def _reject_whitespace_only(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("prompt must contain at least one non-whitespace character")
+        return v
 
 
 def _generate(prompt: str, model: str) -> str:

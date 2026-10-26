@@ -424,8 +424,43 @@ class OllamaEmbedder:
     ) -> None:
         self.model_name = model_name
         self.base_url = base_url.rstrip("/")
-        self.dimensions = dimensions
         self.timeout = timeout
+        # Eagerly determine the embedding dimension so the instance is
+        # thread-safe from construction.  Without this, the first embed()
+        # call mutates self.dimensions under concurrent access.
+        if dimensions is not None:
+            self.dimensions = dimensions
+        else:
+            self.dimensions = self._probe_dimensions()
+
+    def _probe_dimensions(self) -> int:
+        """Probe Ollama for the embedding dimension of this model."""
+        try:
+            res = self._post_json(
+                "/api/embed",
+                {"model": self.model_name, "input": "dimension probe"},
+            )
+            embeddings = res.get("embeddings")
+            if embeddings:
+                return len(embeddings[0])
+            raw = res.get("embedding")
+            if raw is not None:
+                return len(raw)
+        except Exception:
+            pass
+        # Fall back to the legacy endpoint
+        try:
+            res = self._post_json(
+                "/api/embeddings",
+                {"model": self.model_name, "prompt": "dimension probe"},
+            )
+            raw = res.get("embedding")
+            if raw is not None:
+                return len(raw)
+        except Exception:
+            pass
+        # Last resort: 768 (nomic-embed-text default)
+        return 768
 
     def _post_json(self, endpoint: str, data: dict[str, Any]) -> dict[str, Any]:
         import json
@@ -450,8 +485,7 @@ class OllamaEmbedder:
     def embed(self, text: str) -> np.ndarray:
         _validate_text(text)
         if not text.strip():
-            dim = self.dimensions or 768
-            return np.zeros(dim, dtype=np.float32)
+            return np.zeros(self.dimensions, dtype=np.float32)
         try:
             res = self._post_json("/api/embed", {"model": self.model_name, "input": text})
             embeddings = res.get("embeddings")
@@ -466,8 +500,6 @@ class OllamaEmbedder:
         if raw_vec is None:
             raise RuntimeError(f"Ollama returned no embedding in response: {res}")
         vec = _normalize_vec(np.asarray(raw_vec, dtype=np.float32))
-        if self.dimensions is None:
-            self.dimensions = len(vec)
         return validate_embedding(vec, self.dimensions)
 
     def embed_batch(self, texts: list[str]) -> list[np.ndarray]:
