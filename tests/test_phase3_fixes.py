@@ -42,7 +42,7 @@ def test_async_cached_honours_ttl():
 
     @cached(cache=cache, ttl=0.2)
     async def aq(prompt):
-        return "x"
+        return "answer-x"  # >= 3 chars so is_cacheable accepts it
 
     async def run():
         await aq("hello ttl")

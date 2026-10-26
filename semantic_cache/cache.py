@@ -78,6 +78,15 @@ def _validate_query(query: str) -> str:
     return query
 
 
+def _validate_query_for_set(query: str) -> str:
+    """Stricter validation for set(): reject empty or whitespace-only queries."""
+    if not isinstance(query, str):
+        raise TypeError(f"query must be a string, got {type(query).__name__}")
+    if not query.strip():
+        raise ValueError("query must not be empty or whitespace-only")
+    return query
+
+
 def _validate_namespace(ns: str) -> str:
     if not isinstance(ns, str) or not ns:
         raise ValueError("namespace must be a non-empty string")
@@ -256,6 +265,12 @@ ErrorCallback = Callable[[str, Exception], None]
 AsyncCompute = Callable[[str], Awaitable[str]]
 VerifierCallback = Callable[[str, str], bool]
 ShadowComparator = Callable[[str, str], bool]
+CacheableCallback = Callable[[str], bool]
+
+
+def _default_is_cacheable(response: str) -> bool:
+    """Default predicate: reject empty strings and strings shorter than 3 characters."""
+    return isinstance(response, str) and len(response.strip()) >= 3
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +333,11 @@ class SemanticCache:
         Optional ``(fresh_response, cached_response) -> bool`` function used
         to compare shadow responses.  Falls back to the verifier, then to
         exact string comparison.
+    is_cacheable:
+        Optional ``(response: str) -> bool`` predicate that gates whether a
+        computed response is stored.  Default: reject empty strings and
+        strings shorter than 3 characters.  Use to filter out error/fallback
+        phrases such as "I don't know" or "No question was provided."
     """
 
     def __init__(
@@ -344,6 +364,7 @@ class SemanticCache:
         embedding_lru_capacity: int = 1000,
         top_k: int = 1,
         synonym_groups: Iterable[Iterable[str]] | None = None,
+        is_cacheable: CacheableCallback | None = None,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
         self._embedder_name: str = _detect_embedder_name(self.embedder)
@@ -385,6 +406,7 @@ class SemanticCache:
             self.shadow_max_concurrency: int = max(1, int(shadow_max_concurrency))
             self.shadow_comparator: ShadowComparator | None = shadow_comparator
             self.exact_match: bool = exact_match
+            self.is_cacheable: CacheableCallback = is_cacheable or _default_is_cacheable
             self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
             self.stats = Stats()
             self._stats_lock = threading.Lock()
@@ -752,7 +774,7 @@ class SemanticCache:
             The time (seconds) it took to compute *response*.  Used to estimate
             ``stats.seconds_saved`` on future hits.
         """
-        _validate_query(query)
+        _validate_query_for_set(query)
         if not self.enabled or is_time_sensitive_query(query):
             return
 
@@ -894,8 +916,21 @@ class SemanticCache:
                     f"got {type(response).__name__!r}"
                 )
 
-            self.set(query, response, namespace, latency=elapsed, ttl=ttl)
-            result = CacheResult(response=response, hit=False)
+            if not self.is_cacheable(response):
+                logger.debug(
+                    "Skipping cache set for query %r: response rejected by is_cacheable",
+                    query,
+                )
+                result = CacheResult(response=response, hit=False)
+            else:
+                try:
+                    self.set(query, response, namespace, latency=elapsed, ttl=ttl)
+                except ValueError as exc:
+                    # set() may reject empty/whitespace queries; skip caching.
+                    logger.debug(
+                        "Skipping cache set for query %r: %s", query, exc
+                    )
+                result = CacheResult(response=response, hit=False)
         except Exception as exc:
             self.stats.errors += 1
             if self._on_error:
@@ -970,6 +1005,7 @@ class SemanticCache:
         disabled-cache calls always compute independently and never touch the
         embedder or store.
         """
+        _validate_query(query)
         ns = _validate_namespace(namespace or self.namespace)
 
         async def compute_fresh() -> str:
@@ -1034,7 +1070,22 @@ class SemanticCache:
             start = time.perf_counter()
             response = await compute_fresh()
             elapsed = time.perf_counter() - start
-            await asyncio.to_thread(self.set, query, response, ns, elapsed, ttl)
+
+            if not self.is_cacheable(response):
+                logger.debug(
+                    "Skipping async cache set for query %r: response rejected by is_cacheable",
+                    query,
+                )
+                result = CacheResult(response=response, hit=False)
+                future.set_result(result)
+                return result
+
+            try:
+                await asyncio.to_thread(self.set, query, response, ns, elapsed, ttl)
+            except ValueError as exc:
+                logger.debug(
+                    "Skipping async cache set for query %r: %s", query, exc
+                )
             result = CacheResult(response=response, hit=False)
             future.set_result(result)
             return result
