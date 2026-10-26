@@ -8,11 +8,18 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from fastapi.testclient import TestClient
 
-import manual_api_ollama
-from manual_api_ollama import app
-from semantic_cache import HashingEmbedder, SemanticCache, SQLiteStore
+# manual_api_ollama imports ollama + fastapi at module level, which are not
+# part of the base install. Skip the whole module cleanly when they are absent
+# so CI does not fail at collection time.
+pytest.importorskip("ollama")
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+import manual_api_ollama  # noqa: E402
+from manual_api_ollama import app  # noqa: E402
+from semantic_cache import HashingEmbedder, SemanticCache, SQLiteStore  # noqa: E402
 
 
 class _StubEmbedder(HashingEmbedder):

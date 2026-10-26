@@ -984,8 +984,9 @@ class SemanticCache:
                         try:
                             verifier_score = self._verifier_score(query, entry.query)
                             best_verifier_score = verifier_score
-                            if verifier_score is not None and self._verifier_threshold() is not None:
-                                verified = bool(verifier_score >= self._verifier_threshold())
+                            threshold = self._verifier_threshold()
+                            if verifier_score is not None and threshold is not None:
+                                verified = bool(verifier_score >= threshold)
                             else:
                                 # Plain bool verifier: no score to expose.
                                 verified = bool(self.verifier(query, entry.query))
