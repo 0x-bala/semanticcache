@@ -603,6 +603,7 @@ def check_match(
     stopwords: set[str] | None = None,
     paraphrase_safe_words: set[str] | None = None,
     synonym_groups: Iterable[Iterable[str]] | None = None,
+    allow_question_intent_mismatch: bool = False,
 ) -> GuardResult:
     """Evaluate whether new_query safely matches cached_query.
 
@@ -613,6 +614,13 @@ def check_match(
     - VERIFY: One-sided extra content words (beyond the safe-word set),
       both sides have different content words (slot-value substitution), or
       content words appear in a different order.
+
+    When ``allow_question_intent_mismatch`` is True, the "Question intent
+    differs" rule (e.g. "who" vs "what") returns VERIFY with ``must_verify=True``
+    instead of REJECT, so a configured verifier can adjudicate it. This has
+    no effect when no verifier is configured downstream — the cache still
+    treats an unverified VERIFY as a miss. All other REJECT rules are
+    unchanged.
     """
     stopwords = stopwords if stopwords is not None else DEFAULT_STOPWORDS
     # Relative-time requests are deliberately not treated as reusable semantic hits.
@@ -659,6 +667,14 @@ def check_match(
         and question_cached is not None
         and question_new != question_cached
     ):
+        if allow_question_intent_mismatch:
+            # Let a configured verifier adjudicate; without one the cache
+            # still treats an unverified VERIFY as a miss.
+            return GuardResult(
+                GuardVerdict.VERIFY,
+                f"Question intent differs: {question_new!r} vs {question_cached!r}",
+                must_verify=True,
+            )
         return GuardResult(
             GuardVerdict.REJECT,
             f"Question intent differs: {question_new!r} vs {question_cached!r}",

@@ -371,6 +371,12 @@ class SemanticCache:
         computed response is stored.  Default: reject empty strings and
         strings shorter than 3 characters.  Use to filter out error/fallback
         phrases such as "I don't know" or "No question was provided."
+    allow_question_intent_mismatch:
+        When True AND a verifier is configured, the "Question intent differs"
+        guard rule (e.g. "who" vs "what") returns VERIFY with
+        ``must_verify=True`` instead of REJECT, letting the verifier
+        adjudicate.  All other REJECT rules are unchanged.  Has no effect
+        when no verifier is configured (REJECT regardless).  Default False.
     """
 
     def __init__(
@@ -398,6 +404,7 @@ class SemanticCache:
         top_k: int = 1,
         synonym_groups: Iterable[Iterable[str]] | None = None,
         is_cacheable: CacheableCallback | None = None,
+        allow_question_intent_mismatch: bool = False,
     ) -> None:
         self.embedder: Embedder = embedder or HashingEmbedder()
         self._embedder_name: str = _detect_embedder_name(self.embedder)
@@ -435,11 +442,13 @@ class SemanticCache:
             self.guard_buffer: float = guard_buffer
             self.verifier: VerifierCallback | None = verifier
             self.verify_always: bool = verify_always
+            self.allow_question_intent_mismatch: bool = bool(allow_question_intent_mismatch)
             self.shadow_rate: float = max(0.0, min(1.0, float(shadow_rate)))
             self.shadow_max_concurrency: int = max(1, int(shadow_max_concurrency))
             self.shadow_comparator: ShadowComparator | None = shadow_comparator
             self.exact_match: bool = exact_match
             self.is_cacheable: CacheableCallback = is_cacheable or _default_is_cacheable
+            self.allow_question_intent_mismatch: bool = bool(allow_question_intent_mismatch)
             self._embedding_lru = EmbeddingLRUCache(capacity=embedding_lru_capacity)
             self.stats = Stats()
             self._stats_lock = threading.Lock()
@@ -580,6 +589,35 @@ class SemanticCache:
     # Core API
     # ------------------------------------------------------------------
 
+    def _verifier_score(self, query_a: str, query_b: str) -> float | None:
+        """Return the raw verifier score for a pair, or None if the verifier
+        does not expose one (e.g. a plain bool callback)."""
+        verifier = self.verifier
+        if verifier is None:
+            return None
+        model = getattr(verifier, "model", None)
+        if model is None or not hasattr(model, "predict"):
+            return None
+        try:
+            import numpy as np
+
+            scores = np.asarray(model.predict([[query_a, query_b]])).reshape(-1)
+            if scores.size == 1 and np.isfinite(scores[0]):
+                return float(scores[0])
+        except Exception:
+            return None
+        return None
+
+    def _verifier_threshold(self) -> float | None:
+        """Return the verifier's configured threshold, or None if unknown."""
+        verifier = self.verifier
+        if verifier is None:
+            return None
+        threshold = getattr(verifier, "threshold", None)
+        if isinstance(threshold, (int, float)):
+            return float(threshold)
+        return None
+
     def get(
         self,
         query: str,
@@ -716,7 +754,10 @@ class SemanticCache:
 
             if use_guard:
                 guard_result = check_match(
-                    query, entry.query, synonym_groups=self.synonym_groups
+                    query,
+                    entry.query,
+                    synonym_groups=self.synonym_groups,
+                    allow_question_intent_mismatch=self.allow_question_intent_mismatch,
                 )
                 if guard_result.verdict == GuardVerdict.REJECT:
                     logger.debug(
@@ -784,6 +825,198 @@ class SemanticCache:
             except Exception:
                 logger.debug("on_hit callback raised", exc_info=True)
         return result
+
+    def explain(
+        self,
+        query: str,
+        namespace: str | None = None,
+        threshold: float | None = None,
+        guard: bool | None = None,
+        verify_always: bool | None = None,
+    ) -> dict[str, Any]:
+        """Describe how *query* would be resolved, without storing anything.
+
+        Reuses the exact search, guard, and verifier path as ``get()`` but
+        returns a structured explanation instead of a ``CacheResult``.
+        """
+        from semantic_cache.guard import GuardVerdict
+
+        _validate_query(query)
+        if not self.enabled:
+            return {
+                "best_candidate": None,
+                "threshold": self.threshold,
+                "decision": "no_candidates",
+                "guard": None,
+                "verifier_score": None,
+            }
+
+        ns = _validate_namespace(namespace or self.namespace)
+        eff_threshold = _validate_threshold(threshold) if threshold is not None else self.threshold
+        use_guard = self.guard if guard is None else guard
+        eff_verify_always = self.verify_always if verify_always is None else verify_always
+
+        if is_time_sensitive_query(query):
+            return {
+                "best_candidate": None,
+                "threshold": eff_threshold,
+                "decision": "no_candidates",
+                "guard": None,
+                "verifier_score": None,
+            }
+
+        norm_query = normalize_text(query)
+        em_key = exact_match_key(query)
+        query_hash = hashlib.sha256(em_key.encode("utf-8")).hexdigest()
+
+        if self.exact_match and hasattr(self.store, "find_exact"):
+            try:
+                exact_entry = self.store.find_exact(
+                    ns, query_hash, embedder=self._embedder_name
+                )
+                if exact_entry is not None:
+                    return {
+                        "best_candidate": {
+                            "query": exact_entry.query,
+                            "score": 1.0,
+                        },
+                        "threshold": eff_threshold,
+                        "decision": "hit_exact",
+                        "guard": None,
+                        "verifier_score": None,
+                    }
+            except Exception as exc:
+                logger.warning("Exact match lookup failed: %s", exc)
+
+        try:
+            vec = self._embedding_lru.get(self._embedder_name, norm_query)
+            if vec is None:
+                vec = self.embedder.embed(query)
+                vec = validate_embedding(vec)
+                if not is_zero_vector(vec):
+                    self._embedding_lru.put(self._embedder_name, norm_query, vec)
+        except Exception as exc:
+            logger.warning("Embedder failed during explain: %s", exc)
+            return {
+                "best_candidate": None,
+                "threshold": eff_threshold,
+                "decision": "no_candidates",
+                "guard": None,
+                "verifier_score": None,
+            }
+
+        if is_zero_vector(vec):
+            return {
+                "best_candidate": None,
+                "threshold": eff_threshold,
+                "decision": "no_candidates",
+                "guard": None,
+                "verifier_score": None,
+            }
+
+        try:
+            candidates = None
+            candidate_search = getattr(self.store, "search_candidates", None)
+            if callable(candidate_search):
+                try:
+                    candidates = candidate_search(
+                        ns,
+                        vec,
+                        embedder=self._embedder_name,
+                        top_k=self.top_k,
+                        min_similarity=eff_threshold,
+                    )
+                except TypeError:
+                    try:
+                        candidates = candidate_search(
+                            ns, vec, top_k=self.top_k, min_similarity=eff_threshold
+                        )
+                    except TypeError:
+                        candidates = candidate_search(ns, vec)
+            else:
+                try:
+                    entry = self.store.search(ns, vec, embedder=self._embedder_name)
+                except TypeError:
+                    entry = self.store.search(ns, vec)
+                candidates = [entry] if entry is not None else []
+        except Exception as exc:
+            logger.warning("Store search failed during explain: %s", exc)
+            return {
+                "best_candidate": None,
+                "threshold": eff_threshold,
+                "decision": "no_candidates",
+                "guard": None,
+                "verifier_score": None,
+            }
+
+        best_entry = None
+        best_guard = None
+        best_verifier_score = None
+        decision = "no_candidates"
+        for entry in candidates or []:
+            if entry is None or entry.score < eff_threshold:
+                decision = "below_threshold"
+                continue
+
+            if use_guard:
+                guard_result = check_match(
+                    query,
+                    entry.query,
+                    synonym_groups=self.synonym_groups,
+                    allow_question_intent_mismatch=self.allow_question_intent_mismatch,
+                )
+                best_guard = guard_result
+                if guard_result.verdict == GuardVerdict.REJECT:
+                    best_entry = entry
+                    decision = "guard_reject"
+                    continue
+                if guard_result.verdict == GuardVerdict.VERIFY:
+                    should_verify = (
+                        eff_verify_always
+                        or guard_result.must_verify
+                        or entry.score < eff_threshold + self.guard_buffer
+                    )
+                    if should_verify:
+                        if self.verifier is None:
+                            best_entry = entry
+                            decision = "verifier_reject"
+                            continue
+                        try:
+                            verifier_score = self._verifier_score(query, entry.query)
+                            best_verifier_score = verifier_score
+                            verified = bool(verifier_score >= self._verifier_threshold())
+                        except Exception as exc:
+                            logger.warning("Verifier raised exception during explain: %s", exc)
+                            verified = False
+                        if not verified:
+                            best_entry = entry
+                            decision = "verifier_reject"
+                            continue
+                best_entry = entry
+                decision = "hit_verified"
+                break
+            best_entry = entry
+            decision = "hit_guard_accept"
+            break
+
+        return {
+            "best_candidate": (
+                {"query": best_entry.query, "score": best_entry.score}
+                if best_entry is not None
+                else None
+            ),
+            "threshold": eff_threshold,
+            "decision": decision,
+            "guard": (
+                {
+                    "verdict": best_guard.verdict.value,
+                    "reason": best_guard.reason,
+                }
+                if best_guard is not None
+                else None
+            ),
+            "verifier_score": best_verifier_score,
+        }
 
     def set(
         self,

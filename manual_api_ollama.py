@@ -113,6 +113,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         threshold=CACHE_THRESHOLD,
         ttl=CACHE_TTL,
         verifier=verifier,
+        allow_question_intent_mismatch=True,
     )
     try:
         yield
@@ -186,9 +187,25 @@ async def health() -> dict[str, Any]:
         "llm_model": app.state.llm_model,
         "embedder": cache.embedder.__class__.__name__,
         "verifier": app.state.verifier is not None,
+        "allow_question_intent_mismatch": cache.allow_question_intent_mismatch,
         "entries": cache.store.size(),
         "stats": stats,
     }
+
+
+@app.post("/explain")
+async def explain(request: AskRequest) -> dict[str, Any]:
+    """Describe how the cache would resolve *request.prompt*.
+
+    Read-only: no LLM call, nothing stored. Returns the top candidate, the
+    effective cosine threshold, the decision, the guard verdict/reason (if the
+    guard ran), and the cross-encoder score (if the verifier ran).
+    """
+    cache: SemanticCache = app.state.cache
+    try:
+        return cache.explain(request.prompt, namespace=request.namespace)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/ask")
