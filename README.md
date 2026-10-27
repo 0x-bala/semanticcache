@@ -55,6 +55,8 @@ The core package depends only on NumPy. Optional extras:
 | `langchain` | langchain-core | LangChain cache adapter |
 | `llama-index` | llama-index-core | LlamaIndex adapter |
 | `transformers` | sentence-transformers | Local embeddings and cross-encoder verifier |
+| `web` | fastapi, uvicorn | Demo FastAPI app |
+| `ollama` | ollama | Ollama client for the local demo |
 | `dev` | pytest, ruff, build, anyio | Development |
 | `all` | all of the above except `dev` | |
 
@@ -94,21 +96,23 @@ else:
 
 ### Try it through a local API
 
-The optional FastAPI demo exposes `/ask` and `/health`. It uses Gemini for both
-embeddings and text generation, uses FAISS HNSW for similarity search starting
-with the first cached entry, and persists entries in `manual_demo_cache.db`.
-Install the web and FAISS extras, add `GEMINI_API_KEY=your_gemini_api_key` to a
-local `.env` file, and tell Uvicorn to load it:
+The optional FastAPI demo exposes `/ask`, `/health` and `/explain`. It uses a local Ollama
+model for both embeddings and text generation, uses FAISS HNSW for similarity search starting
+with the first cached entry, and persists entries in `manual_ollama_cache.db`.
 
 ```powershell
-pip install -e ".[web,ann]"
-uvicorn manual_api:app --reload --env-file .env
+ollama pull llama3.2:3b
+ollama pull nomic-embed-text
+pip install -e ".[web,ollama,transformers]"
+python -m uvicorn manual_api_ollama:app --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8000/docs` to try the endpoints interactively. Send a prompt
-to `POST /ask`; send the same prompt again to see `cache_hit: true`. `/health`
-reports cache statistics. This demo has no authentication, so keep it bound to
-localhost and do not expose it publicly.
+Open `http://127.0.0.1:8765/docs` to try the endpoints interactively. Send a prompt to
+`POST /ask`; send the same prompt again to see `cache_hit: true`. `/health` reports cache
+statistics and whether a verifier is configured. `POST /explain` is read-only: it never calls
+the LLM, stores nothing, and returns the top candidate, the effective cosine threshold, the
+decision, the guard verdict and reason, and the cross-encoder score. This demo has no
+authentication, so keep it bound to localhost and do not expose it publicly.
 
 ## Usage
 
@@ -183,8 +187,12 @@ cache = SemanticCache(verifier=GeminiVerifier())    # uses GEMINI_API_KEY
 ```
 
 Any callable `verifier(new_query, cached_query) -> bool` works, including a local model
-such as `CrossEncoderVerifier` (`transformers` extra). A verifier that errors or times out
-returns "no", so a failure produces a miss, not a wrong answer.
+such as `CrossEncoderVerifier` (`transformers` extra). `CrossEncoderVerifier` defaults to
+threshold 0.9 on a 0-1 scale (earlier versions used an unreachable 4.25); calibrate it on a
+labeled sample of your own pairs. `allow_question_intent_mismatch` (default False) lets the
+"question intent differs" rule send candidates to the verifier instead of rejecting them
+when a verifier is configured. A verifier that errors or times out returns "no", so a
+failure produces a miss, not a wrong answer.
 
 **Conservative verification policy**: A `VERIFY` verdict is _always_ adjudicated — it
 can never be bypassed by a high cosine similarity score. `verify_always=False` is retained
@@ -337,14 +345,18 @@ Below roughly 10,000 entries brute force is fast enough and needs no extra depen
 | Similarity only (`guard=False`) | 64.0% | 14.7% |
 | Guard on, no verifier (default) | 7.8% | 0.8% |
 | Guard on, `verify_always=False` | 21.1% | 2.8% |
+| Guard on + CrossEncoderVerifier (threshold 0.9) | 25.5% | 1.9% |
+
+The numbers come from Quora question pairs with MiniLM embeddings, so results on other
+data and embedders will differ. At cosine threshold 0.80 the verifier row is 26.6% / 2.0%.
 
 The guard serves about 18 times fewer wrong answers than similarity alone. Without a
 verifier it also serves far fewer correct paraphrases, because ambiguous matches are
 treated as misses. The Quora dataset is loosely labeled (some "non-duplicates" are
 reasonable paraphrases), so absolute values on your traffic will differ.
 
-Not yet measured: accuracy with a verifier, shadow-mode estimates against ground truth with
-a semantic comparator, FAISS on hnswlib at scale, and a comparison with other caches.
+Shadow-mode estimates against ground truth with a semantic comparator, FAISS on hnswlib at
+scale, and a comparison with other caches are not yet published.
 
 To reproduce:
 
@@ -381,8 +393,10 @@ Repository layout:
 
 ```
 semantic_cache/   library code (cache, store, embedders, guard, verifier, adapters)
+manual_api_ollama.py  local Ollama demo FastAPI app (/ask, /health, /explain)
 tests/            unit and regression tests
 benchmarks/       reproducible speed and accuracy benchmarks and recorded results
+                  benchmarks/calibrate_verifier.py  measures verifier thresholds
 tools/            threshold tuning
 ```
 
