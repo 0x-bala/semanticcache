@@ -1,17 +1,21 @@
+"""Shared pytest fixtures.
+
+The autouse fixture below pins ``OLLAMA_HOST`` to a closed port (127.0.0.1:9)
+for every test, so no test can ever reach a real Ollama server by accident.
+Tests that need an Ollama client must mock it explicitly.
+"""
+
+from __future__ import annotations
+
 import os
-import pathlib
-import sys
 
-# Make the package importable from the repo root
-sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+import pytest
 
-if "GEMINI_API_KEY" not in os.environ and os.name == "nt":
-    try:
-        import winreg
 
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            val, _ = winreg.QueryValueEx(key, "GEMINI_API_KEY")
-            if val:
-                os.environ["GEMINI_API_KEY"] = val
-    except Exception:
-        pass
+@pytest.fixture(autouse=True)
+def _no_real_ollama(monkeypatch):
+    """Point every test at a closed port unless the test sets OLLAMA_HOST itself."""
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:9")
+    # Make sure a stale process-level value cannot override the monkeypatched one.
+    os.environ.pop("OLLAMA_HOST", None)
+    yield

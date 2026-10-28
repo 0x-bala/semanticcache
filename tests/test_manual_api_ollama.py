@@ -182,14 +182,22 @@ def client_with_verifier(monkeypatch):
 
 
 class TestAskEndpoint:
-    def test_ask_returns_502_when_ollama_unreachable(self, client, monkeypatch) -> None:
-        """/ask must return 502 and store nothing when Ollama is unreachable."""
+    def _boom_client(self, exc):
+        """Return a fake llm_client whose .chat raises *exc*."""
+
+        class _FakeClient:
+            def chat(self, *args, **kwargs):
+                raise exc
+
+        return _FakeClient()
+
+    def test_ask_returns_502_when_ollama_request_error(self, client, monkeypatch) -> None:
+        """/ask must return 502 and store nothing when Ollama raises a RequestError."""
         import ollama
 
-        def boom(*args, **kwargs):
-            raise ollama.RequestError("connection refused")
-
-        monkeypatch.setattr(ollama, "chat", boom)
+        monkeypatch.setattr(
+            app.state, "llm_client", self._boom_client(ollama.RequestError("connection refused"))
+        )
 
         response = client.post(
             "/ask",
@@ -200,13 +208,11 @@ class TestAskEndpoint:
         assert "Ollama" in response.json()["detail"]
         assert app.state.cache.store.size() == 0
 
-    def test_ask_returns_502_on_timeout(self, client, monkeypatch) -> None:
-        import ollama
-
-        def boom(*args, **kwargs):
-            raise TimeoutError("request timed out")
-
-        monkeypatch.setattr(ollama, "chat", boom)
+    def test_ask_returns_502_on_connection_error(self, client, monkeypatch) -> None:
+        """/ask must return 502 and store nothing on a plain ConnectionError."""
+        monkeypatch.setattr(
+            app.state, "llm_client", self._boom_client(ConnectionError("refused"))
+        )
 
         response = client.post(
             "/ask",
@@ -214,12 +220,28 @@ class TestAskEndpoint:
         )
 
         assert response.status_code == 502
+        assert "unreachable" in response.json()["detail"]
+        assert app.state.cache.store.size() == 0
+
+    def test_ask_returns_504_on_httpx_timeout(self, client, monkeypatch) -> None:
+        """/ask must return 504 and store nothing on an httpx read timeout."""
+        import httpx
+
+        monkeypatch.setattr(
+            app.state, "llm_client", self._boom_client(httpx.ReadTimeout("timed out"))
+        )
+
+        response = client.post(
+            "/ask",
+            json={"prompt": "Who wrote Hamlet?"},
+        )
+
+        assert response.status_code == 504
+        assert "timed out" in response.json()["detail"]
         assert app.state.cache.store.size() == 0
 
     def test_ask_returns_502_on_empty_response(self, client, monkeypatch) -> None:
         """An empty Ollama response must surface as 502, never cached."""
-        import ollama
-
         class _EmptyMessage:
             role = "assistant"
             content = ""
@@ -235,10 +257,11 @@ class TestAskEndpoint:
             done_reason = "stop"
             message = _EmptyMessage()
 
-        def boom(*args, **kwargs):
-            return _EmptyResponse()
+        class _FakeClient:
+            def chat(self, *args, **kwargs):
+                return _EmptyResponse()
 
-        monkeypatch.setattr(ollama, "chat", boom)
+        monkeypatch.setattr(app.state, "llm_client", _FakeClient())
 
         response = client.post(
             "/ask",
@@ -249,12 +272,11 @@ class TestAskEndpoint:
         assert app.state.cache.store.size() == 0
 
     def test_ask_rejects_whitespace_prompt(self, client, monkeypatch) -> None:
-        import ollama
+        class _FakeClient:
+            def chat(self, *args, **kwargs):
+                raise AssertionError("should not be called")
 
-        def boom(*args, **kwargs):
-            raise AssertionError("should not be called")
-
-        monkeypatch.setattr(ollama, "chat", boom)
+        monkeypatch.setattr(app.state, "llm_client", _FakeClient())
 
         response = client.post(
             "/ask",
@@ -262,6 +284,98 @@ class TestAskEndpoint:
         )
 
         assert response.status_code == 422
+
+    def test_ask_normal_answer_still_works(self, client, monkeypatch) -> None:
+        """/ask must return 200 and cache the answer on a normal Ollama reply."""
+        class _Message:
+            role = "assistant"
+            content = "Hamlet was written by William Shakespeare."
+
+        class _Response:
+            model = "llama3.2:3b"
+            created_at = ""
+            done = True
+            done_reason = "stop"
+            message = _Message()
+
+        class _FakeClient:
+            def chat(self, *args, **kwargs):
+                return _Response()
+
+        monkeypatch.setattr(app.state, "llm_client", _FakeClient())
+
+        response = client.post(
+            "/ask",
+            json={"prompt": "Who wrote Hamlet?"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["response"] == "Hamlet was written by William Shakespeare."
+        assert body["cache_hit"] is False
+        assert app.state.cache.store.size() == 1
+
+        # Second call must be served from cache (no second chat call).
+        response = client.post(
+            "/ask",
+            json={"prompt": "Who wrote Hamlet?"},
+        )
+        assert response.status_code == 200
+        assert response.json()["cache_hit"] is True
+        assert app.state.cache.store.size() == 1
+
+
+# ---------------------------------------------------------------------------
+# /explain endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestExplainEndpoint:
+    def test_explain_runs_through_run_in_threadpool(self, client, monkeypatch) -> None:
+        """/explain must not block the event loop — it must go through run_in_threadpool."""
+        calls = []
+
+        async def fake_run_in_threadpool(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(manual_api_ollama, "run_in_threadpool", fake_run_in_threadpool)
+
+        response = client.post(
+            "/explain",
+            json={"prompt": "Who wrote Hamlet?"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "best_candidate" in body
+        assert "threshold" in body
+        assert "decision" in body
+        assert calls, "run_in_threadpool was not called"
+        # The bound method passed to run_in_threadpool must wrap the cache's explain.
+        assert calls[0][0].__func__ is app.state.cache.explain.__func__
+
+    def test_explain_rejects_whitespace_prompt(self, client, monkeypatch) -> None:
+        """/explain must still reject an empty/whitespace prompt with 422.
+
+        Pydantic validation runs before the endpoint body, so this is a 422 at the
+        request-parsing layer rather than inside the handler.
+        """
+        called = []
+
+        async def fake_run_in_threadpool(func, *args, **kwargs):
+            called.append(True)
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(manual_api_ollama, "run_in_threadpool", fake_run_in_threadpool)
+
+        response = client.post(
+            "/explain",
+            json={"prompt": "   "},
+        )
+
+        assert response.status_code == 422
+        assert not called, "run_in_threadpool should not be reached for a 422"
 
 
 class TestLifespanFailsWhenOllamaDown:
