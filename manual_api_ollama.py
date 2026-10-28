@@ -29,6 +29,8 @@ except ImportError:
         "Install it with: pip install -e '.[ollama]'"
     )
 
+import httpx
+
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
@@ -64,6 +66,7 @@ FAISS_ANN_THRESHOLD = 10_000        # switch to FAISS HNSW above 10k entries
 CACHE_THRESHOLD = 0.85              # minimum cosine similarity for a hit
 CACHE_TTL = 3600                    # 1 hour TTL
 VERIFIER_THRESHOLD = 0.9            # cross-encoder score floor (0..1 scale)
+OLLAMA_TIMEOUT_S = 60               # request timeout for the Ollama chat client
 
 
 def _build_verifier():
@@ -73,7 +76,7 @@ def _build_verifier():
     except ImportError as exc:
         logger.warning(
             "sentence-transformers not installed; running without a verifier. "
-            "Install with: pip install -e '.[transformers]'. (%s)",
+            "Install it with: pip install -e '.[transformers]'. (%s)",
             exc,
         )
         return None
@@ -82,6 +85,14 @@ def _build_verifier():
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Could not initialise CrossEncoderVerifier: %s", exc)
         return None
+
+
+def _build_ollama_client(embedder: Any) -> Any:
+    """Build a single Ollama chat client bound to the embedder's base URL."""
+    import ollama
+
+    host = getattr(embedder, "base_url", None) or "http://127.0.0.1:11434"
+    return ollama.Client(host=host, timeout=OLLAMA_TIMEOUT_S)
 
 
 @asynccontextmanager
@@ -101,6 +112,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     verifier = _build_verifier()
     app.state.verifier = verifier
+    app.state.llm_client = _build_ollama_client(embedder)
 
     store = SQLiteStore(
         "manual_ollama_cache.db",
@@ -163,14 +175,16 @@ def _build_chat_payload(prompt: str, model: str) -> dict[str, Any]:
     }
 
 
-def _generate(prompt: str, model: str) -> str:
+def _generate(prompt: str, model: str, client: Any) -> str:
     """Call the local Ollama model synchronously via /api/chat.
 
     Raises ``ConnectionError`` if Ollama returns no usable text so that
-    ``/ask`` can convert it to a 502 without caching the failure.
+    ``/ask`` can convert it to a 502 without caching the failure. Raises
+    ``httpx.TimeoutException`` on read/connect timeouts so ``/ask`` can
+    return 504.
     """
     payload = _build_chat_payload(prompt, model)
-    response = ollama.chat(**payload)
+    response = client.chat(**payload)
     message = getattr(response, "message", None)
     text = getattr(message, "content", "") if message is not None else ""
     if not text:
@@ -212,15 +226,18 @@ async def explain(request: AskRequest) -> dict[str, Any]:
 async def ask(request: AskRequest) -> dict[str, Any]:
     cache: SemanticCache = app.state.cache
     model: str = app.state.llm_model
+    client = app.state.llm_client
     try:
         result = await run_in_threadpool(
             cache.get_or_compute,
             request.prompt,
-            lambda p: _generate(p, model),
+            lambda p: _generate(p, model, client),
             request.namespace,
         )
     except (ollama.RequestError, ollama.ResponseError) as exc:
         raise HTTPException(status_code=502, detail=f"Ollama error: {exc}") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail=f"Ollama timed out: {exc}") from exc
     except (ConnectionError, TimeoutError) as exc:
         raise HTTPException(status_code=502, detail=f"Ollama unreachable: {exc}") from exc
     except ValueError as exc:
