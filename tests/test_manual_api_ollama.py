@@ -264,6 +264,23 @@ class TestAskEndpoint:
         assert response.status_code == 422
 
 
+class TestLifespanFailsWhenOllamaDown:
+    """When OllamaEmbedder can't reach the server, the lifespan must fail
+    with a clear RuntimeError rather than silently starting."""
+
+    def test_lifespan_raises_when_embedder_probe_fails(self, monkeypatch) -> None:
+        from semantic_cache.embedders import OllamaEmbedder
+
+        def boom(*args, **kwargs):
+            raise ConnectionError("refused")
+
+        monkeypatch.setattr(OllamaEmbedder, "_probe_dimensions", boom)
+
+        with pytest.raises(RuntimeError, match="Could not connect to Ollama"):
+            with TestClient(app) as client:
+                client.get("/health")
+
+
 class TestHealthVerifierField:
     def test_health_verifier_false_when_absent(self, client) -> None:
         """/health must report verifier=false when no verifier is configured."""

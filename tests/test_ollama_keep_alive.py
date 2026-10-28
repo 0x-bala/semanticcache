@@ -150,3 +150,71 @@ class TestFallbackPolicy:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# _probe_dimensions: fail closed (no 768 guess)
+# ---------------------------------------------------------------------------
+
+
+class _ProbeEmbedder(OllamaEmbedder):
+    """OllamaEmbedder subclass that runs the real dimension probe."""
+
+    def __init__(self, post_fn, dimensions: int | None = None) -> None:
+        self.model_name = "nomic-embed-text"
+        self.base_url = "http://localhost:11434"
+        self.timeout = 30.0
+        self.keep_alive = "30m"
+        self._post_fn = post_fn
+        if dimensions is not None:
+            self.dimensions = dimensions
+        else:
+            self.dimensions = self._probe_dimensions()
+
+    def _post_json(self, endpoint, data):
+        return self._post_fn(endpoint, data)
+
+
+class TestProbeDimensionsFailClosed:
+    def test_unreachable_ollama_raises_connection_error(self) -> None:
+        def post(endpoint, data):
+            raise ConnectionError("refused")
+
+        with pytest.raises(ConnectionError):
+            _ProbeEmbedder(post)
+
+    def test_404_raises_model_not_found(self) -> None:
+        def post(endpoint, data):
+            raise OllamaNotFoundError("404")
+
+        with pytest.raises(RuntimeError, match="model not found; run: ollama pull"):
+            _ProbeEmbedder(post)
+
+    def test_404_then_legacy_404_raises_model_not_found(self) -> None:
+        calls = []
+
+        def post(endpoint, data):
+            calls.append(endpoint)
+            raise OllamaNotFoundError("404")
+
+        with pytest.raises(RuntimeError, match="model not found; run: ollama pull"):
+            _ProbeEmbedder(post)
+        assert calls == ["/api/embed", "/api/embeddings"]
+
+    def test_explicit_dimensions_skips_probe(self) -> None:
+        calls = []
+
+        def post(endpoint, data):
+            calls.append(endpoint)
+            raise AssertionError("probe must not run when dimensions= is set")
+
+        embedder = _ProbeEmbedder(post, dimensions=1024)
+        assert embedder.dimensions == 1024
+        assert calls == []
+
+    def test_empty_response_raises(self) -> None:
+        def post(endpoint, data):
+            return {}
+
+        with pytest.raises(RuntimeError, match="no embedding"):
+            _ProbeEmbedder(post)

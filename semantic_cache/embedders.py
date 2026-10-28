@@ -445,7 +445,13 @@ class OllamaEmbedder:
             self.dimensions = self._probe_dimensions()
 
     def _probe_dimensions(self) -> int:
-        """Probe Ollama for the embedding dimension of this model."""
+        """Probe Ollama for the embedding dimension of this model.
+
+        Raises:
+            ConnectionError: Ollama is unreachable.
+            RuntimeError: the model is not available (HTTP 404) with the
+                text 'model not found; run: ollama pull <model_name>'.
+        """
         try:
             res = self._post_json(
                 "/api/embed",
@@ -461,8 +467,12 @@ class OllamaEmbedder:
             raw = res.get("embedding")
             if raw is not None:
                 return len(raw)
+            raise RuntimeError(
+                f"Ollama returned no embedding for model {self.model_name!r}"
+            )
         except OllamaNotFoundError:
-            # Fall back to the legacy endpoint
+            # /api/embed returned 404. Try the legacy endpoint once; if it
+            # also fails, the model is not available.
             try:
                 res = self._post_json(
                     "/api/embeddings",
@@ -475,12 +485,11 @@ class OllamaEmbedder:
                 raw = res.get("embedding")
                 if raw is not None:
                     return len(raw)
-            except Exception:
+            except OllamaNotFoundError:
                 pass
-        except Exception:
-            pass
-        # Last resort: 768 (nomic-embed-text default)
-        return 768
+            raise RuntimeError(
+                f"model not found; run: ollama pull {self.model_name}"
+            ) from None
 
     def _post_json(self, endpoint: str, data: dict[str, Any]) -> dict[str, Any]:
         import json
