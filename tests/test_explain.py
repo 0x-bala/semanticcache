@@ -58,12 +58,30 @@ def _chat_response(content: str) -> _ChatResponse:
     return _ChatResponse(content)
 
 
+class _FakeOllamaClient:
+    """Stand-in for ollama.Client used by the app's lifespan.
+
+    Tests replace ``chat`` via monkeypatch on the instance exposed on
+    ``app.state.llm_client`` after startup, so no test ever talks to a real
+    Ollama server.
+    """
+
+    def chat(self, *args, **kwargs):  # noqa: D401  pragma: no cover
+        return _chat_response("")
+
+
 @pytest.fixture
 def client(monkeypatch):
-    """TestClient with a stubbed embedder, in-memory store, and NO verifier,
-    so the lifespan succeeds offline and tests are isolated."""
+    """TestClient with a stubbed embedder, in-memory store, NO verifier, and a
+    fake Ollama chat client — so the lifespan succeeds offline and tests are
+    isolated from any real Ollama server."""
     monkeypatch.setattr(manual_api_ollama, "OllamaEmbedder", _StubEmbedder)
     monkeypatch.setattr(manual_api_ollama, "_build_verifier", lambda: None)
+    monkeypatch.setattr(
+        manual_api_ollama,
+        "_build_ollama_client",
+        lambda embedder: _FakeOllamaClient(),
+    )
 
     _orig_sqlite_store = manual_api_ollama.SQLiteStore
 
@@ -212,7 +230,7 @@ class TestExplainReadOnly:
     def test_post_explain_never_stores(self, client, monkeypatch) -> None:
         """/ask seeds one entry (mocked LLM), then /explain must not add any."""
         monkeypatch.setattr(
-            manual_api_ollama.ollama,
+            client.app.state.llm_client,
             "chat",
             lambda *a, **k: _chat_response("answer to: " + k["messages"][1]["content"].strip()),
         )
@@ -225,12 +243,25 @@ class TestExplainReadOnly:
         def boom(*a, **k):
             raise AssertionError("LLM must not be called")
 
-        monkeypatch.setattr(manual_api_ollama.ollama, "chat", boom)
+        monkeypatch.setattr(client.app.state.llm_client, "chat", boom)
         response = client.post(
             "/explain", json={"prompt": "Who is the author of Hamlet?"}
         )
         assert response.status_code == 200
         assert client.app.state.cache.store.size() == before
+
+    def test_post_explain_never_calls_llm(self, client, monkeypatch) -> None:
+        """/explain must succeed without ever invoking the Ollama chat client."""
+        def boom(*a, **k):
+            raise AssertionError("LLM must not be called")
+
+        monkeypatch.setattr(client.app.state.llm_client, "chat", boom)
+
+        response = client.post(
+            "/explain", json={"prompt": "Who is the author of Hamlet?"}
+        )
+        assert response.status_code == 200
+        assert "decision" in response.json()
 
     def test_post_explain_returns_422_for_empty(self, client) -> None:
         response = client.post("/explain", json={"prompt": ""})
