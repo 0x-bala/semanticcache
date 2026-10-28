@@ -325,6 +325,59 @@ class TestAskEndpoint:
         assert app.state.cache.store.size() == 1
 
 
+# ---------------------------------------------------------------------------
+# /explain endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestExplainEndpoint:
+    def test_explain_runs_through_run_in_threadpool(self, client, monkeypatch) -> None:
+        """/explain must not block the event loop — it must go through run_in_threadpool."""
+        calls = []
+
+        async def fake_run_in_threadpool(func, *args, **kwargs):
+            calls.append((func, args, kwargs))
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(manual_api_ollama, "run_in_threadpool", fake_run_in_threadpool)
+
+        response = client.post(
+            "/explain",
+            json={"prompt": "Who wrote Hamlet?"},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "best_candidate" in body
+        assert "threshold" in body
+        assert "decision" in body
+        assert calls, "run_in_threadpool was not called"
+        # The bound method passed to run_in_threadpool must wrap the cache's explain.
+        assert calls[0][0].__func__ is app.state.cache.explain.__func__
+
+    def test_explain_rejects_whitespace_prompt(self, client, monkeypatch) -> None:
+        """/explain must still reject an empty/whitespace prompt with 422.
+
+        Pydantic validation runs before the endpoint body, so this is a 422 at the
+        request-parsing layer rather than inside the handler.
+        """
+        called = []
+
+        async def fake_run_in_threadpool(func, *args, **kwargs):
+            called.append(True)
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr(manual_api_ollama, "run_in_threadpool", fake_run_in_threadpool)
+
+        response = client.post(
+            "/explain",
+            json={"prompt": "   "},
+        )
+
+        assert response.status_code == 422
+        assert not called, "run_in_threadpool should not be reached for a 422"
+
+
 class TestLifespanFailsWhenOllamaDown:
     """When OllamaEmbedder can't reach the server, the lifespan must fail
     with a clear RuntimeError rather than silently starting."""

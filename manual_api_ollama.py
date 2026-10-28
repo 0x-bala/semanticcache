@@ -30,7 +30,6 @@ except ImportError:
     )
 
 import httpx
-
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
@@ -217,7 +216,9 @@ async def explain(request: AskRequest) -> dict[str, Any]:
     """
     cache: SemanticCache = app.state.cache
     try:
-        return cache.explain(request.prompt, namespace=request.namespace)
+        return await run_in_threadpool(
+            cache.explain, request.prompt, namespace=request.namespace
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
