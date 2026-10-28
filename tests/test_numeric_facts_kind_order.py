@@ -6,11 +6,14 @@ facts appear in a different token order must not be REJECTED by this rule.
 
 from __future__ import annotations
 
-from semantic_cache.guard import check_match, GuardVerdict
+from semantic_cache.guard import GuardVerdict, check_match
 
 
 def test_range_swap_still_rejects() -> None:
-    result = check_match("What is the distance from 5 to 10 km?", "What is the distance from 10 to 5 km?")
+    result = check_match(
+        "What is the distance from 5 to 10 km?",
+        "What is the distance from 10 to 5 km?",
+    )
     assert result.verdict == GuardVerdict.REJECT
 
 

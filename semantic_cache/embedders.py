@@ -535,7 +535,13 @@ class OllamaEmbedder:
             ) from exc
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
-            if isinstance(reason, TimeoutError) or "timed out" in str(reason).lower() or "timeout" in str(reason).lower():
+            reason_text = str(reason).lower()
+            is_timeout = (
+                isinstance(reason, TimeoutError)
+                or "timed out" in reason_text
+                or "timeout" in reason_text
+            )
+            if is_timeout:
                 raise TimeoutError(
                     f"Timed out contacting Ollama at {self.base_url}{endpoint}"
                 ) from exc

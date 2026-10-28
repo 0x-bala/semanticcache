@@ -8,8 +8,6 @@ Does not change any library behaviour. Run:
 
 from __future__ import annotations
 
-import json
-import statistics
 import time
 
 from semantic_cache.cross_encoder import CrossEncoderVerifier
