@@ -419,6 +419,25 @@ class OllamaNotFoundError(Exception):
     """
 
 
+def _resolve_ollama_base_url(base_url: str | None) -> str:
+    """Resolve the Ollama base URL.
+
+    An explicit ``base_url`` wins. Otherwise the ``OLLAMA_HOST`` environment
+    variable is used, with "http://" prepended when it has no scheme. The
+    final default is http://127.0.0.1:11434.
+    """
+    if base_url is not None:
+        return base_url.rstrip("/")
+    import os
+
+    host = os.environ.get("OLLAMA_HOST", "").strip()
+    if host:
+        if "://" not in host:
+            host = f"http://{host}"
+        return host.rstrip("/")
+    return "http://127.0.0.1:11434"
+
+
 class OllamaEmbedder:
     """Embedder using a local Ollama instance (nomic-embed-text by default)."""
 
@@ -427,13 +446,13 @@ class OllamaEmbedder:
     def __init__(
         self,
         model_name: str = "nomic-embed-text",
-        base_url: str = "http://localhost:11434",
+        base_url: str | None = None,
         dimensions: int | None = None,
         timeout: float = 30.0,
         keep_alive: str = "30m",
     ) -> None:
         self.model_name = model_name
-        self.base_url = base_url.rstrip("/")
+        self.base_url = _resolve_ollama_base_url(base_url)
         self.timeout = timeout
         self.keep_alive = keep_alive
         # Eagerly determine the embedding dimension so the instance is

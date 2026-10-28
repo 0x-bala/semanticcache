@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-import numpy as np
 import pytest
 
-from semantic_cache.embedders import OllamaEmbedder, OllamaNotFoundError
+from semantic_cache.embedders import OllamaEmbedder, OllamaNotFoundError, _resolve_ollama_base_url
 
 
 class _FakeEmbedder(OllamaEmbedder):
@@ -150,6 +147,47 @@ class TestFallbackPolicy:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# base_url resolution
+# ---------------------------------------------------------------------------
+
+
+class _NoProbeEmbedder(OllamaEmbedder):
+    """OllamaEmbedder subclass that skips the dimension probe."""
+
+    def __init__(self, base_url=None, dimensions: int = 4) -> None:
+        self.model_name = "nomic-embed-text"
+        self.base_url = _resolve_ollama_base_url(base_url)
+        self.timeout = 30.0
+        self.keep_alive = "30m"
+        self.dimensions = dimensions
+
+    def _probe_dimensions(self) -> int:  # pragma: no cover - never called
+        raise AssertionError("probe must not run in base_url tests")
+
+
+class TestBaseResolution:
+    def test_explicit_url_wins(self, monkeypatch) -> None:
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        embedder = _NoProbeEmbedder(base_url="http://example.com:9999/")
+        assert embedder.base_url == "http://example.com:9999"
+
+    def test_ollama_host_used_and_scheme_added(self, monkeypatch) -> None:
+        monkeypatch.setenv("OLLAMA_HOST", "example.com:9999")
+        embedder = _NoProbeEmbedder()
+        assert embedder.base_url == "http://example.com:9999"
+
+    def test_default_is_127_0_0_1(self, monkeypatch) -> None:
+        monkeypatch.delenv("OLLAMA_HOST", raising=False)
+        embedder = _NoProbeEmbedder()
+        assert embedder.base_url == "http://127.0.0.1:11434"
+
+    def test_ollama_host_with_scheme_kept(self, monkeypatch) -> None:
+        monkeypatch.setenv("OLLAMA_HOST", "https://ollama.example.com")
+        embedder = _NoProbeEmbedder()
+        assert embedder.base_url == "https://ollama.example.com"
 
 
 # ---------------------------------------------------------------------------
