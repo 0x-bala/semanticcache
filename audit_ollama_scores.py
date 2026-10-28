@@ -41,7 +41,10 @@ def main() -> None:
     ]
 
     print("=== OllamaEmbedder (nomic-embed-text) similarity scores ===\n")
-    print(f"{'#':>2s}  {'guard_off':>10s}  {'guard_on':>10s}  {'verdict':>10s}  {'flag':>12s}  Pair")
+    print(
+        f"{'#':>2s}  {'guard_off':>10s}  {'guard_on':>10s}  "
+        f"{'verdict':>10s}  {'flag':>12s}  Pair"
+    )
     print("-" * 100)
 
     for i, (a, b) in enumerate(pairs, 1):

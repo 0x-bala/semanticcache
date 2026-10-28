@@ -1,9 +1,11 @@
-import json, sys
+import json
+import sys
+
 import numpy as np
 from sentence_transformers import CrossEncoder
 
 sys.path.insert(0, ".")
-from semantic_cache.guard import check_match, GuardVerdict
+from semantic_cache.guard import GuardVerdict, check_match
 
 pairs = json.load(open("benchmarks/data/pairs_2k.json", encoding="utf-8"))
 verify = [p for p in pairs

@@ -154,22 +154,19 @@ class TestQueryValidation:
 
 
 class TestOllamaEmbedderDimensions:
-    def test_dimensions_set_in_init(self) -> None:
-        """OllamaEmbedder must set self.dimensions in __init__ (thread-safe)."""
+    def test_probe_raises_when_ollama_unreachable(self) -> None:
+        """OllamaEmbedder must fail closed: an unreachable Ollama raises at
+        construction rather than silently guessing a dimension."""
         from semantic_cache.embedders import OllamaEmbedder
 
-        # We can't actually connect to Ollama in CI, so we test that
-        # _probe_dimensions returns a sane fallback when Ollama is unreachable.
-        embedder = OllamaEmbedder(
-            model_name="nomic-embed-text",
-            base_url="http://127.0.0.1:1",  # closed port → connection refused
-            timeout=0.5,
-        )
-        assert embedder.dimensions is not None
-        assert isinstance(embedder.dimensions, int)
-        assert embedder.dimensions > 0
+        with pytest.raises((ConnectionError, TimeoutError)):
+            OllamaEmbedder(
+                model_name="nomic-embed-text",
+                base_url="http://127.0.0.1:1",  # closed port -> connection refused
+                timeout=0.5,
+            )
 
-    def test_explicit_dimensions(self) -> None:
+    def test_explicit_dimensions_skips_probe(self) -> None:
         from semantic_cache.embedders import OllamaEmbedder
 
         embedder = OllamaEmbedder(
