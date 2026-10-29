@@ -492,6 +492,27 @@ def _has_antonym_flip(tokens1: list[str], tokens2: list[str]) -> bool:
     )
 
 
+def _is_role_swap(tokens_new: list[str], tokens_cached: list[str]) -> bool:
+    """True when two token sequences are identical except that two words trade places.
+
+    "Flights from Delhi to Mumbai" vs "Flights from Mumbai to Delhi" keep every other word in
+    place (``from ... to``) while the source and the target exchange, so the cached answer is
+    wrong. A similarity model cannot see this, so it must not be left to a verifier.
+
+    Deliberately narrow: the sequences must have the same length and differ at exactly two
+    positions whose words are exchanged. "Who is the CEO of Apple?" vs "Who is Apple CEO?" (a
+    rewording that changes the length) and "Is Paris the capital of France?" vs "Is the capital
+    of France Paris?" (a rotation) are not swaps and stay with the verifier.
+    """
+    if len(tokens_new) != len(tokens_cached):
+        return False
+    differing = [i for i, (a, b) in enumerate(zip(tokens_new, tokens_cached)) if a != b]
+    if len(differing) != 2:
+        return False
+    i, j = differing
+    return tokens_new[i] == tokens_cached[j] and tokens_new[j] == tokens_cached[i]
+
+
 def _directional_markers(tokens: list[str]) -> list[str]:
     markers: list[str] = []
     i = 0
@@ -791,6 +812,12 @@ def check_match(
     # Rule (d''): content words in a different order → VERIFY
     ordered_new = [t for t in canonical_new if t not in stopwords and t not in safe_words]
     ordered_cached = [t for t in canonical_cached if t not in stopwords and t not in safe_words]
+    if _is_role_swap(tokens_new, tokens_cached):
+        return GuardResult(
+            GuardVerdict.REJECT,
+            "Two words trade places (roles may be reversed): "
+            f"{ordered_new} vs {ordered_cached}",
+        )
     if ordered_new != ordered_cached:
         return GuardResult(
             GuardVerdict.VERIFY, "Content words appear in different order", must_verify=True
