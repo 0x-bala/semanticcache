@@ -191,8 +191,7 @@ class TestGuardRules:
             ),
             ("List fruits", "List red fruits"),
             ("Show me restaurants", "Show me vegetarian restaurants"),
-            ("Flights from Chennai to Delhi", "Flights from Delhi to Chennai"),
-            ("from Pune to Mumbai", "from Mumbai to Pune"),
+            # Role swaps ("from A to B" vs "from B to A") are REJECTed; see test_direction_swap.py.
         ],
     )
     def test_extra_content_words_and_reordering_return_verify(
